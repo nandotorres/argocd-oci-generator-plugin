@@ -1,0 +1,38 @@
+# Plugin server configuration for Amazon ECR.
+#
+# No secrets live here. ECR credentials are obtained from the pod identity
+# (IRSA / Pod Identity) and, for cross-account, by assuming `roleArn`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oci-generator-config
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: oci-generator
+    app.kubernetes.io/part-of: argocd
+data:
+  config.yaml: |
+    listen: ":8080"
+    token: "${PLUGIN_TOKEN}"
+    # Registry host is the account's ECR endpoint.
+    defaultRegistry: "111122223333.dkr.ecr.us-east-1.amazonaws.com"
+    requestTimeoutSeconds: 60
+    registries:
+      # --- Same-account ECR (identity = the SA's IRSA/Pod-Identity role) ---
+      - host: "111122223333.dkr.ecr.us-east-1.amazonaws.com"
+        auth:
+          type: ecr
+          region: us-east-1
+          # roleArn omitted: use the pod's own identity directly.
+        # Defense in depth: constrain which repositories ApplicationSets may target.
+        allowedRepositories:
+          - "apps-oci/**"
+
+      # --- Cross-account ECR (assume a role in the ECR-owning account) ---
+      # - host: "444455556666.dkr.ecr.eu-west-1.amazonaws.com"
+      #   auth:
+      #     type: ecr
+      #     region: eu-west-1
+      #     roleArn: "arn:aws:iam::444455556666:role/ecr-read-for-oci-generator"
+      #   allowedRepositories:
+      #     - "platform/**"

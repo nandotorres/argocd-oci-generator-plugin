@@ -129,6 +129,11 @@ Set `auth.type: ecr`, a `region`, and (optionally) a `roleArn` to assume. The po
 uses its AWS identity (IRSA recommended) to call `GetAuthorizationToken`; tokens
 are cached until shortly before expiry.
 
+See **[`deploy/examples/ecr/`](deploy/examples/ecr/)** for a complete, good-
+practices setup: IRSA / EKS Pod Identity, same- and cross-account, a least-
+privilege IAM policy, trust policies, server config, and a matching
+ApplicationSet.
+
 ## Development
 
 ```bash
