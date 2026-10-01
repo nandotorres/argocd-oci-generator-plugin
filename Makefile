@@ -4,7 +4,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMAGE ?= ghcr.io/nandotorres/argocd-oci-generator-plugin
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-GOLANGCI_LINT_VERSION ?= v1.64.8
+GOLANGCI_LINT_VERSION ?= v2.14.0
 
 .PHONY: help
 help: ## Show this help
@@ -31,7 +31,7 @@ cover: ## Run tests and open a coverage report
 .PHONY: lint
 lint: ## Run golangci-lint (installs it on demand)
 	@command -v golangci-lint >/dev/null 2>&1 || \
-		go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	golangci-lint run
 
 .PHONY: tidy

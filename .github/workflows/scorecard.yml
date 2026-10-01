@@ -20,7 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       security-events: write # upload SARIF to the Security tab
-      id-token: write # publish results to the public OpenSSF API
       contents: read
     steps:
       - name: Harden runner
@@ -35,7 +34,9 @@ jobs:
         with:
           results_file: scorecard.sarif
           results_format: sarif
-          publish_results: true
+          # Publishing to the public OpenSSF API rejects SHA-pinned action refs
+          # ("imposter commit"); keep false since actions are pinned by policy.
+          publish_results: false
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

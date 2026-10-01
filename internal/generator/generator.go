@@ -1,3 +1,5 @@
+// Package generator turns registry queries into ApplicationSet parameters:
+// it lists artifacts, applies tag filters, sorts, and limits the result set.
 package generator
 
 import (

@@ -37,22 +37,24 @@ jobs:
           cache: true
       - name: Verify module checksums
         run: go mod verify
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
       - name: govulncheck
-        uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1.0.4
-        with:
-          go-version-input: ${{ env.GO_VERSION }}
-          repo-checkout: false
+        run: govulncheck ./...
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: "0.74.0"
+        run: |
+          curl -fsSL -o trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          tar -xzf trivy.tar.gz trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
       - name: Trivy filesystem scan (fail on fixable CRITICAL/HIGH)
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
-        with:
-          scan-type: fs
-          scanners: vuln,secret,misconfig
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          severity: CRITICAL,HIGH
         env:
           TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+        run: |
+          trivy fs --scanners vuln,secret,misconfig \
+            --ignore-unfixed --severity CRITICAL,HIGH --exit-code 1 .
 
   release:
     name: goreleaser + sign + attest
@@ -118,18 +120,22 @@ jobs:
           subject-digest: ${{ steps.img.outputs.digest }}
           push-to-registry: true
 
-      # Post-publish scan of the exact released digest; uploads to the Security tab.
+      # Post-publish scan of the exact released digest.
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: "0.74.0"
+        run: |
+          curl -fsSL -o trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          tar -xzf trivy.tar.gz trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
       - name: Trivy image scan (SARIF)
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
-        with:
-          scan-type: image
-          image-ref: ${{ steps.img.outputs.repo }}@${{ steps.img.outputs.digest }}
-          format: sarif
-          output: trivy-image.sarif
-          ignore-unfixed: true
-          severity: CRITICAL,HIGH
         env:
           TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+        run: |
+          trivy image --format sarif --output trivy-image.sarif \
+            --ignore-unfixed --severity CRITICAL,HIGH \
+            "${{ steps.img.outputs.repo }}@${{ steps.img.outputs.digest }}"
 
       - name: Upload image scan artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
