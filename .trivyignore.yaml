@@ -1,0 +1,19 @@
+# Trivy ignore rules (path-scoped, with rationale).
+# Passed explicitly via `--ignorefile .trivyignore.yaml` in CI and `make scan`.
+#
+# KSV-0109 — "Storing secrets in configMaps is unsafe".
+# False positive here: these ConfigMaps never contain inline secrets. The flagged
+# values are *references* resolved at runtime from Secrets:
+#   - Argo CD secret-ref syntax:  token: "$oci-generator-secret:token"
+#   - environment expansion:      token: "${PLUGIN_TOKEN}" / "${ARTIFACTORY_PASS}"
+# This is the documented security model (DESIGN.md §5): credentials are supplied
+# via env vars / Secret refs and never travel inline or over the ApplicationSet.
+misconfigurations:
+  - id: KSV-0109
+    paths:
+      - "deploy/manifests/configmap-plugin.yaml"
+      - "deploy/manifests/configmap-server.yaml"
+      - "deploy/examples/ecr/configmap-server-ecr.yaml"
+    statement: >-
+      Values are Secret references ($secret:key / ${ENV}) resolved at runtime,
+      not inline secrets.
