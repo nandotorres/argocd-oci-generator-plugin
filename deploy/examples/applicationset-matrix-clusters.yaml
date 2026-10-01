@@ -1,0 +1,53 @@
+# Matrix generator: per-cluster fan-out (clusters generator) combined with the
+# OCI plugin generator.
+#
+# The clusters generator yields one entry per selected cluster; the plugin
+# generator discovers a matching OCI artifact and injects its oci.* parameters.
+# The matrix produces the cross product, so an Application is created per
+# (cluster, discovered-artifact) pair.
+#
+# All names are placeholders (example.com, apps-oci/..., registry.example.com).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: web-app
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          # 1) Fan out over clusters selected by label.
+          - clusters:
+              selector:
+                matchLabels:
+                  example.com/auto-create-apps: "true"
+          # 2) Discover the OCI artifact to deploy (existence check on a tag).
+          - plugin:
+              configMapRef:
+                name: oci-generator
+              requeueAfterSeconds: 600
+              input:
+                parameters:
+                  registry: registry.example.com
+                  repository: apps-oci/web-app
+                  tags: ["stable"]
+  template:
+    metadata:
+      name: "web-app-{{ .name }}"
+    spec:
+      project: default
+      destination:
+        name: "{{ .name }}"
+        namespace: web-app
+      source:
+        repoURL: "{{ .oci.registry }}"
+        chart: "{{ .oci.repository }}"
+        targetRevision: "{{ .oci.tag }}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
