@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/torres/argocd-oci-generator-plugin/internal/config"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/config"
 )
 
 func mustConfig(t *testing.T, raw string) *config.Config {

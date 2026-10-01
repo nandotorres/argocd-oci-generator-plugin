@@ -6,7 +6,7 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 
-	"github.com/torres/argocd-oci-generator-plugin/internal/pattern"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/pattern"
 )
 
 // SortKey selects how matched artifacts are ordered before limiting.

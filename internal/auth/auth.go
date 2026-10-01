@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 
-	"github.com/torres/argocd-oci-generator-plugin/internal/config"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/config"
 )
 
 // Provider turns a registry host into an authenticator for a given request.

@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/torres/argocd-oci-generator-plugin/internal/oci"
-	"github.com/torres/argocd-oci-generator-plugin/internal/pattern"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/oci"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/pattern"
 )
 
 // RegistryClient is the subset of registry behaviour the generator needs. It is

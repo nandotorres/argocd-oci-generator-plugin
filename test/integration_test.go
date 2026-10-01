@@ -19,11 +19,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/torres/argocd-oci-generator-plugin/internal/auth"
-	"github.com/torres/argocd-oci-generator-plugin/internal/config"
-	"github.com/torres/argocd-oci-generator-plugin/internal/generator"
-	"github.com/torres/argocd-oci-generator-plugin/internal/registry"
-	"github.com/torres/argocd-oci-generator-plugin/internal/server"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/auth"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/config"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/generator"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/registry"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/server"
 )
 
 func push(t *testing.T, host, repo, tag string, ann map[string]string) {

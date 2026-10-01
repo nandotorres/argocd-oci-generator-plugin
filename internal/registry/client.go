@@ -14,8 +14,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
-	"github.com/torres/argocd-oci-generator-plugin/internal/auth"
-	"github.com/torres/argocd-oci-generator-plugin/internal/oci"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/auth"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/oci"
 )
 
 // Client is a go-containerregistry-backed registry client.

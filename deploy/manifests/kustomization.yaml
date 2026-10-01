@@ -12,5 +12,5 @@ resources:
   # - secret.example.yaml
 
 images:
-  - name: ghcr.io/torres/argocd-oci-generator-plugin
+  - name: ghcr.io/nandotorres/argocd-oci-generator-plugin
     newTag: latest

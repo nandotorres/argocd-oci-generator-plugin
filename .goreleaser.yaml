@@ -33,7 +33,7 @@ sboms:
 dockers:
   - id: amd64
     image_templates:
-      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
+      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
     use: buildx
     dockerfile: Dockerfile
     goarch: amd64
@@ -42,7 +42,7 @@ dockers:
       - "--build-arg=VERSION={{ .Version }}"
   - id: arm64
     image_templates:
-      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
+      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
     use: buildx
     dockerfile: Dockerfile
     goarch: arm64
@@ -51,14 +51,14 @@ dockers:
       - "--build-arg=VERSION={{ .Version }}"
 
 docker_manifests:
-  - name_template: "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}"
+  - name_template: "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}"
     image_templates:
-      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
-      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/torres/argocd-oci-generator-plugin:latest"
+      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
+      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/nandotorres/argocd-oci-generator-plugin:latest"
     image_templates:
-      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
-      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
+      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
+      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
 
 docker_signs:
   - cmd: cosign
@@ -72,4 +72,4 @@ release:
   prerelease: auto
   footer: |
     ---
-    Container image: `ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}`
+    Container image: `ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}`

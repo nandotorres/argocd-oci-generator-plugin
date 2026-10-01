@@ -1,4 +1,4 @@
-module github.com/torres/argocd-oci-generator-plugin
+module github.com/nandotorres/argocd-oci-generator-plugin
 
 go 1.25.0
 

@@ -1,7 +1,7 @@
 SHELL := /bin/bash
-MODULE := github.com/torres/argocd-oci-generator-plugin
+MODULE := github.com/nandotorres/argocd-oci-generator-plugin
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-IMAGE ?= ghcr.io/torres/argocd-oci-generator-plugin
+IMAGE ?= ghcr.io/nandotorres/argocd-oci-generator-plugin
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 GOLANGCI_LINT_VERSION ?= v1.64.8

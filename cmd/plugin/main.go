@@ -12,11 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/torres/argocd-oci-generator-plugin/internal/auth"
-	"github.com/torres/argocd-oci-generator-plugin/internal/config"
-	"github.com/torres/argocd-oci-generator-plugin/internal/generator"
-	"github.com/torres/argocd-oci-generator-plugin/internal/registry"
-	"github.com/torres/argocd-oci-generator-plugin/internal/server"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/auth"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/config"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/generator"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/registry"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/server"
 )
 
 // version is set at build time via -ldflags.

@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/torres/argocd-oci-generator-plugin/internal/oci"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/oci"
 )
 
 // fakeClient is an in-memory RegistryClient for tests.

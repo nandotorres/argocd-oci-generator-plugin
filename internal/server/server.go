@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/torres/argocd-oci-generator-plugin/internal/config"
-	"github.com/torres/argocd-oci-generator-plugin/internal/generator"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/config"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/generator"
 )
 
 // Generator is the behaviour the server needs; satisfied by *generator.Generator.

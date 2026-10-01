@@ -23,7 +23,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: plugin
-          image: ghcr.io/torres/argocd-oci-generator-plugin:latest
+          image: ghcr.io/nandotorres/argocd-oci-generator-plugin:latest
           args: ["--config=/etc/oci-generator/config.yaml"]
           ports:
             - name: http

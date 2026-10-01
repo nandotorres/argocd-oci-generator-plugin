@@ -6,7 +6,7 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 
-	"github.com/torres/argocd-oci-generator-plugin/internal/oci"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/oci"
 )
 
 // matchAnnotations reports whether the artifact's annotations satisfy every

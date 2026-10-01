@@ -11,7 +11,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	"github.com/torres/argocd-oci-generator-plugin/internal/pattern"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/pattern"
 )
 
 // AuthType enumerates the supported credential providers.
