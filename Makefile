@@ -93,6 +93,14 @@ dev: build ## Run the server locally with the example config
 smoke: ## Run the local end-to-end smoke test against a throwaway registry
 	./hack/smoke.sh
 
+.PHONY: e2e
+e2e: ## Full kind-based demo (Argo CD + registry + plugin + break scenario)
+	./hack/e2e.sh
+
+.PHONY: e2e-clean
+e2e-clean: ## Delete the kind cluster created by `make e2e`
+	./hack/e2e.sh --clean
+
 .PHONY: ruleset
 ruleset: ## Apply branch-protection-as-code to the default branch (needs gh admin)
 	./scripts/apply-ruleset.sh

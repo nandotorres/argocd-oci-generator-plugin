@@ -1,0 +1,26 @@
+{
+  "name": "argocd-oci-generator-plugin",
+  "image": "mcr.microsoft.com/devcontainers/go:1.25-bookworm",
+  "features": {
+    // Docker-in-Docker so `kind` and `docker build` work inside the sandbox
+    // (Codespaces, local Dev Containers, or any CDE) without touching the host.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "postCreateCommand": "bash .devcontainer/postCreate.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "redhat.vscode-yaml"
+      ]
+    }
+  },
+  // kind needs a bit of headroom for Argo CD + registry + the plugin.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+  "remoteUser": "vscode"
+}
