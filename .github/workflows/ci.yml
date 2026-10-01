@@ -114,6 +114,7 @@ jobs:
           TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
         run: |
           trivy fs --scanners vuln,secret,misconfig \
+            --ignorefile .trivyignore.yaml \
             --format sarif --output trivy-fs.sarif \
             --severity CRITICAL,HIGH .
       - name: Upload SARIF
