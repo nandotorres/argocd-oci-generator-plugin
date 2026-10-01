@@ -30,6 +30,24 @@ checksum:
 sboms:
   - artifacts: archive
 
+# Keyless (Sigstore) signature over the checksum file, which in turn covers
+# every archive + SBOM. Verify with:
+#   cosign verify-blob --certificate checksums.txt.pem \
+#     --signature checksums.txt.sig \
+#     --certificate-identity-regexp 'https://github.com/<owner>/<repo>' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+    artifacts: checksum
+    output: true
+
 dockers:
   - id: amd64
     image_templates:
@@ -68,8 +86,45 @@ docker_signs:
       - "--yes"
       - "${artifact}@${digest}"
 
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Security
+      regexp: '^.*?(sec|security)(\(.+\))??!?:.+$'
+      order: 2
+    - title: Others
+      order: 999
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+
 release:
   prerelease: auto
   footer: |
     ---
-    Container image: `ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}`
+    ### Container image
+    `ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}`
+
+    **Verify provenance (SLSA):**
+    ```
+    gh attestation verify oci://ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }} \
+      --repo nandotorres/argocd-oci-generator-plugin
+    ```
+    **Verify image signature (cosign keyless):**
+    ```
+    cosign verify ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }} \
+      --certificate-identity-regexp 'https://github.com/nandotorres/argocd-oci-generator-plugin' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```

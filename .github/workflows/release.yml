@@ -5,35 +5,134 @@ on:
     tags:
       - "v*"
 
+# Least privilege at the top; the release job widens where strictly needed.
 permissions:
-  contents: write
-  packages: write
-  id-token: write # cosign keyless signing
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.25"
+  GOFLAGS: "-mod=readonly"
 
 jobs:
-  release:
+  # ---------------------------------------------------------------------------
+  # Supply-chain gate: if deps/source carry known vulnerabilities, the release
+  # job never runs, so a compromised dependency cannot produce a signed artifact.
+  # ---------------------------------------------------------------------------
+  guard:
+    name: supply-chain gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Harden runner
+        uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Verify module checksums
+        run: go mod verify
+      - name: govulncheck
+        uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1.0.4
+        with:
+          go-version-input: ${{ env.GO_VERSION }}
+          repo-checkout: false
+      - name: Trivy filesystem scan (fail on fixable CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+        env:
+          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+
+  release:
+    name: goreleaser + sign + attest
+    needs: guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+      packages: write # push to GHCR
+      id-token: write # Sigstore keyless signing + attestations (OIDC)
+      attestations: write # actions/attest-* writes to the attestations store
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: "1.25"
+          go-version: ${{ env.GO_VERSION }}
           cache: true
-      - uses: sigstore/cosign-installer@v3
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Resolve the authoritative multi-arch manifest-list digest straight from
+      # the registry (robust against GoReleaser's internal artifact schema).
+      - name: Resolve pushed image digest
+        id: img
+        run: |
+          repo="ghcr.io/${{ github.repository }}"
+          version="${GITHUB_REF_NAME#v}"
+          digest="$(docker buildx imagetools inspect "$repo:$version" \
+            --format '{{ json .Manifest.Digest }}' | tr -d '"')"
+          case "$digest" in
+            sha256:*) : ;;
+            *) echo "::error::could not resolve image digest for $repo:$version"; exit 1 ;;
+          esac
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Image: $repo@$digest"
+
+      # SLSA build provenance for the container image (verifiable via `gh attestation verify`).
+      - name: Attest image build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ${{ steps.img.outputs.repo }}
+          subject-digest: ${{ steps.img.outputs.digest }}
+          push-to-registry: true
+
+      # Post-publish scan of the exact released digest; uploads to the Security tab.
+      - name: Trivy image scan (SARIF)
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        with:
+          scan-type: image
+          image-ref: ${{ steps.img.outputs.repo }}@${{ steps.img.outputs.digest }}
+          format: sarif
+          output: trivy-image.sarif
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+        env:
+          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+
+      - name: Upload image scan artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: trivy-image-sarif
+          path: trivy-image.sarif

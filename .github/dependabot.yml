@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # Keep GitHub Actions pinned to fresh, immutable SHAs (Dependabot rewrites the
+  # pin + the "# vX.Y.Z" comment together). This is what keeps SHA-pinning safe.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: ["dependencies", "ci"]
+
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      aws-sdk:
+        patterns: ["github.com/aws/*"]
+      go-minor-patch:
+        update-types: ["minor", "patch"]
+    labels: ["dependencies", "go"]
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "docker"]

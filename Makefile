@@ -42,6 +42,42 @@ tidy: ## Tidy go modules
 vet: ## go vet
 	go vet ./...
 
+.PHONY: verify
+verify: ## Verify module checksums against go.sum
+	go mod verify
+
+.PHONY: vuln
+vuln: ## Run govulncheck (Go vulnerability database)
+	@command -v govulncheck >/dev/null 2>&1 || \
+		go install golang.org/x/vuln/cmd/govulncheck@latest
+	govulncheck ./...
+
+.PHONY: scan
+scan: ## Run Trivy filesystem scan (vuln + secret + misconfig), same gate as CI
+	@command -v trivy >/dev/null 2>&1 || { echo "install trivy: https://trivy.dev"; exit 1; }
+	trivy fs --scanners vuln,secret,misconfig --ignore-unfixed \
+		--severity CRITICAL,HIGH --exit-code 1 .
+
+.PHONY: audit
+audit: verify vuln scan ## Run the full local supply-chain gate (mirrors release 'guard' job)
+
+.PHONY: go-upgrade
+go-upgrade: ## Bump the Go toolchain + stdlib to the latest patch, then re-run the gate
+	@latest=$$(curl -fsSL 'https://go.dev/dl/?mode=json' | \
+		grep -m1 -oE '"version": "go[0-9.]+"' | grep -oE 'go[0-9.]+'); \
+	[ -n "$$latest" ] || { echo "could not resolve latest Go version"; exit 1; }; \
+	echo "Pinning toolchain to $$latest"; \
+	go mod edit -toolchain=$$latest; \
+	go get go@$${latest#go} 2>/dev/null || true; \
+	go mod tidy
+	$(MAKE) audit
+
+.PHONY: deps-upgrade
+deps-upgrade: ## Update all direct+indirect module deps to latest, tidy, then gate
+	go get -u ./...
+	go mod tidy
+	$(MAKE) audit
+
 .PHONY: image
 image: ## Build the container image
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
@@ -56,6 +92,10 @@ dev: build ## Run the server locally with the example config
 .PHONY: smoke
 smoke: ## Run the local end-to-end smoke test against a throwaway registry
 	./hack/smoke.sh
+
+.PHONY: ruleset
+ruleset: ## Apply branch-protection-as-code to the default branch (needs gh admin)
+	./scripts/apply-ruleset.sh
 
 .PHONY: clean
 clean: ## Remove build artifacts
