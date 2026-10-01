@@ -30,7 +30,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run Scorecard
-        uses: ossf/scorecard-action@55891bbd73f2425e97637d96e306fc9d491d0b21 # v2.4.4
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
           results_file: scorecard.sarif
           results_format: sarif
@@ -44,7 +44,7 @@ jobs:
           path: scorecard.sarif
           retention-days: 7
       - name: Upload SARIF
-        uses: github/codeql-action/upload-sarif@be1102e4461872bb6506cd26561a31b56671ace0 # v3.30.9
+        uses: github/codeql-action/upload-sarif@42213152a85ae7569bdb6bec7bcd74cd691bfe41 # v3.30.9
         with:
           sarif_file: scorecard.sarif
           category: scorecard
@@ -52,7 +52,7 @@ jobs:
       # Human-readable scores (aggregate + per-check 0..10) rendered into the
       # run Summary page — the SARIF above only carries findings, not scores.
       - name: Run Scorecard (JSON)
-        uses: ossf/scorecard-action@55891bbd73f2425e97637d96e306fc9d491d0b21 # v2.4.4
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
           results_file: scorecard.json
           results_format: json
