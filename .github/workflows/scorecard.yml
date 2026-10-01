@@ -48,3 +48,27 @@ jobs:
         with:
           sarif_file: scorecard.sarif
           category: scorecard
+
+      # Human-readable scores (aggregate + per-check 0..10) rendered into the
+      # run Summary page — the SARIF above only carries findings, not scores.
+      - name: Run Scorecard (JSON)
+        uses: ossf/scorecard-action@55891bbd73f2425e97637d96e306fc9d491d0b21 # v2.4.4
+        with:
+          results_file: scorecard.json
+          results_format: json
+          publish_results: false
+      - name: Render score table to job summary
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("scorecard.json"))
+          print(f"## OpenSSF Scorecard: **{d.get('score','?')}/10**\n")
+          print("| Score | Check | Reason |")
+          print("|------:|-------|--------|")
+          for c in sorted(d.get("checks", []), key=lambda x: (x.get("score") if x.get("score") is not None else -1)):
+              s = c.get("score")
+              s = s if s is not None else "n/a"
+              reason = (c.get("reason") or "").replace("|", "\\|")[:80]
+              print(f"| {s} | {c.get('name','')} | {reason} |")
+          PY
