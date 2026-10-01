@@ -1,0 +1,45 @@
+# Plugin server configuration.
+#
+# Secrets are NEVER placed here directly; reference environment variables with
+# ${VAR} (populated from Kubernetes Secrets). This keeps credentials off the
+# ApplicationSet wire and centralizes them with the platform team (DESIGN.md §5).
+
+listen: ":8080"
+
+# Bearer token the ApplicationSet controller must present. Must match the token
+# stored in the ArgoCD-side Secret referenced by the plugin ConfigMap.
+token: "${PLUGIN_TOKEN}"
+
+# Used when an ApplicationSet omits `registry`.
+defaultRegistry: artifactory.example.com
+
+# Bound each getparams.execute call.
+requestTimeoutSeconds: 60
+
+registries:
+  # Artifactory (or any Docker-registry-v2 with basic auth).
+  - host: artifactory.example.com
+    auth:
+      type: basic
+      username: "${ARTIFACTORY_USER}"
+      password: "${ARTIFACTORY_PASS}"
+    # Restrict which repositories ApplicationSets may target (glob; empty = all).
+    allowedRepositories:
+      - "apps-oci/**"
+
+  # Amazon ECR. Credentials come from the pod's AWS identity (IRSA / instance
+  # role); optionally assume a role that has ECR read permissions.
+  - host: "111122223333.dkr.ecr.us-east-1.amazonaws.com"
+    auth:
+      type: ecr
+      region: us-east-1
+      roleArn: "arn:aws:iam::111122223333:role/argocd-ecr-reader"
+
+  # A public registry (no credentials).
+  - host: public.ecr.aws
+    auth:
+      type: anonymous
+
+tls:
+  insecureSkipVerify: false
+  plainHTTP: false

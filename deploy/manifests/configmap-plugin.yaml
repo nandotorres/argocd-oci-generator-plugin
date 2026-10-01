@@ -1,0 +1,15 @@
+# This is the ConfigMap the ApplicationSet controller reads to discover the
+# plugin. It MUST be labeled app.kubernetes.io/part-of: argocd.
+#
+# `token` references a Secret using the ArgoCD "$<secretName>:<key>" syntax.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oci-generator
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+data:
+  baseUrl: "http://oci-generator.argocd.svc.cluster.local"
+  token: "$oci-generator-secret:token"
+  requestTimeout: "60"

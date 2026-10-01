@@ -1,0 +1,40 @@
+# Create an Application only if a specific tag exists in the OCI repository.
+#
+# If the tag exists       -> one Application is created/kept.
+# If the tag is absent    -> no Application (and any previously-created one is
+#                            removed, which is the intended behaviour).
+# If the registry errors  -> the generator errors and NOTHING is deleted.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: orders-api-dev
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - plugin:
+        configMapRef:
+          name: oci-generator
+        requeueAfterSeconds: 120
+        input:
+          parameters:
+            registry: artifactory.example.com
+            repository: apps-oci/orders-api/orders-api/dev
+            tags: ["dev-current"] # exact-match existence check
+  template:
+    metadata:
+      name: orders-api-dev
+    spec:
+      project: default
+      source:
+        repoURL: "{{ .oci.registry }}/{{ .oci.repository }}"
+        targetRevision: "{{ .oci.tag }}"
+        chart: "" # set if this is a Helm OCI chart
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: orders-api
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true

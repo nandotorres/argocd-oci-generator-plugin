@@ -1,0 +1,32 @@
+# The plugin server's own configuration (no secrets here; ${VAR} references are
+# resolved from the mounted environment at runtime).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oci-generator-config
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: oci-generator
+    app.kubernetes.io/part-of: argocd
+data:
+  config.yaml: |
+    listen: ":8080"
+    token: "${PLUGIN_TOKEN}"
+    defaultRegistry: artifactory.example.com
+    requestTimeoutSeconds: 60
+    registries:
+      - host: artifactory.example.com
+        auth:
+          type: basic
+          username: "${ARTIFACTORY_USER}"
+          password: "${ARTIFACTORY_PASS}"
+        allowedRepositories:
+          - "apps-oci/**"
+      - host: "111122223333.dkr.ecr.us-east-1.amazonaws.com"
+        auth:
+          type: ecr
+          region: us-east-1
+          roleArn: "arn:aws:iam::111122223333:role/argocd-ecr-reader"
+    tls:
+      insecureSkipVerify: false
+      plainHTTP: false

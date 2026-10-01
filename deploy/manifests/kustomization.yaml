@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: argocd
+
+resources:
+  - service.yaml
+  - deployment.yaml
+  - configmap-server.yaml
+  - configmap-plugin.yaml
+  # Manage secrets out-of-band; secret.example.yaml is a template only.
+  # - secret.example.yaml
+
+images:
+  - name: ghcr.io/torres/argocd-oci-generator-plugin
+    newTag: latest

@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oci-generator
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: oci-generator
+    app.kubernetes.io/part-of: argocd
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oci-generator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oci-generator
+    spec:
+      serviceAccountName: oci-generator
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: plugin
+          image: ghcr.io/torres/argocd-oci-generator-plugin:latest
+          args: ["--config=/etc/oci-generator/config.yaml"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Plugin bearer token (must match the ArgoCD-side secret).
+            - name: PLUGIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: oci-generator-secret
+                  key: token
+            # Registry credentials (basic auth example).
+            - name: ARTIFACTORY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: oci-generator-registry-creds
+                  key: artifactory-user
+            - name: ARTIFACTORY_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: oci-generator-registry-creds
+                  key: artifactory-pass
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/oci-generator
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: oci-generator-config

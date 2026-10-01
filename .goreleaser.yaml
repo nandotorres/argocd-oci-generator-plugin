@@ -1,0 +1,75 @@
+version: 2
+
+project_name: argocd-oci-generator-plugin
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: plugin
+    main: ./cmd/plugin
+    binary: plugin
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+sboms:
+  - artifacts: archive
+
+dockers:
+  - id: amd64
+    image_templates:
+      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
+    use: buildx
+    dockerfile: Dockerfile
+    goarch: amd64
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--build-arg=VERSION={{ .Version }}"
+  - id: arm64
+    image_templates:
+      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
+    use: buildx
+    dockerfile: Dockerfile
+    goarch: arm64
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--build-arg=VERSION={{ .Version }}"
+
+docker_manifests:
+  - name_template: "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
+      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/torres/argocd-oci-generator-plugin:latest"
+    image_templates:
+      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
+      - "ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
+
+docker_signs:
+  - cmd: cosign
+    artifacts: manifests
+    args:
+      - "sign"
+      - "--yes"
+      - "${artifact}@${digest}"
+
+release:
+  prerelease: auto
+  footer: |
+    ---
+    Container image: `ghcr.io/torres/argocd-oci-generator-plugin:{{ .Version }}`
