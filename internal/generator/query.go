@@ -12,6 +12,7 @@ import (
 // SortKey selects how matched artifacts are ordered before limiting.
 type SortKey string
 
+// Supported sort keys.
 const (
 	SortSemVer  SortKey = "semver"
 	SortAlpha   SortKey = "alpha"
@@ -21,6 +22,7 @@ const (
 // SortOrder is ascending or descending.
 type SortOrder string
 
+// Supported sort orders.
 const (
 	OrderAsc  SortOrder = "asc"
 	OrderDesc SortOrder = "desc"
@@ -29,6 +31,7 @@ const (
 // SelectorOperator is a Kubernetes-style set-based operator for annotations.
 type SelectorOperator string
 
+// Supported set-based selector operators.
 const (
 	OpIn           SelectorOperator = "In"
 	OpNotIn        SelectorOperator = "NotIn"

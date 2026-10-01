@@ -17,6 +17,7 @@ import (
 // AuthType enumerates the supported credential providers.
 type AuthType string
 
+// Supported registry authentication types.
 const (
 	AuthAnonymous AuthType = "anonymous"
 	AuthBasic     AuthType = "basic"

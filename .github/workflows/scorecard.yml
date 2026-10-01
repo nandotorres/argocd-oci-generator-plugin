@@ -20,30 +20,55 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       security-events: write # upload SARIF to the Security tab
-      id-token: write # publish results to the public OpenSSF API
       contents: read
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Run Scorecard
-        uses: ossf/scorecard-action@99c09fe975337306107572b4fdf4db224cf8e2f2 # v2.4.3
+        uses: ossf/scorecard-action@55891bbd73f2425e97637d96e306fc9d491d0b21 # v2.4.4
         with:
           results_file: scorecard.sarif
           results_format: sarif
-          publish_results: true
+          # Publishing to the public OpenSSF API rejects SHA-pinned action refs
+          # ("imposter commit"); keep false since actions are pinned by policy.
+          publish_results: false
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scorecard-sarif
           path: scorecard.sarif
           retention-days: 7
       - name: Upload SARIF
-        uses: github/codeql-action/upload-sarif@0b1f0509b2ddb4dc7bd94367abfe7ad1d8a1b810 # v3.30.5
+        uses: github/codeql-action/upload-sarif@be1102e4461872bb6506cd26561a31b56671ace0 # v3.30.9
         with:
           sarif_file: scorecard.sarif
           category: scorecard
+
+      # Human-readable scores (aggregate + per-check 0..10) rendered into the
+      # run Summary page — the SARIF above only carries findings, not scores.
+      - name: Run Scorecard (JSON)
+        uses: ossf/scorecard-action@55891bbd73f2425e97637d96e306fc9d491d0b21 # v2.4.4
+        with:
+          results_file: scorecard.json
+          results_format: json
+          publish_results: false
+      - name: Render score table to job summary
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("scorecard.json"))
+          print(f"## OpenSSF Scorecard: **{d.get('score','?')}/10**\n")
+          print("| Score | Check | Reason |")
+          print("|------:|-------|--------|")
+          for c in sorted(d.get("checks", []), key=lambda x: (x.get("score") if x.get("score") is not None else -1)):
+              s = c.get("score")
+              s = s if s is not None else "n/a"
+              reason = (c.get("reason") or "").replace("|", "\\|")[:80]
+              print(f"| {s} | {c.get('name','')} | {reason} |")
+          PY
