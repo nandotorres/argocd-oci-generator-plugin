@@ -1,5 +1,17 @@
-# The plugin server's own configuration (no secrets here; ${VAR} references are
-# resolved from the mounted environment at runtime).
+# The plugin server's own configuration. No secrets live here — only ${VAR}
+# indirections, resolved from the pod's environment at startup.
+#
+# How ${VAR} maps to a Secret (three hops, nothing inline):
+#   Secret key  ->  Deployment env (secretKeyRef)  ->  ${VAR} in this file
+# For example PLUGIN_TOKEN:
+#   Secret oci-generator-secret[token]
+#     -> deployment.yaml env PLUGIN_TOKEN (valueFrom.secretKeyRef)
+#       -> config.yaml token: "${PLUGIN_TOKEN}"   (expanded at load; errors if unset)
+# PLUGIN_TOKEN is the bearer token the ApplicationSet controller must present to
+# call the plugin; the SAME Secret is referenced from the Argo CD side in
+# configmap-plugin.yaml ("$oci-generator-secret:token") so both ends match.
+# ARTIFACTORY_USER / ARTIFACTORY_PASS map the same way from
+# oci-generator-registry-creds.
 apiVersion: v1
 kind: ConfigMap
 metadata:
