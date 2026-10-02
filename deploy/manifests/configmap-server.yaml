@@ -10,7 +10,7 @@
 # PLUGIN_TOKEN is the bearer token the ApplicationSet controller must present to
 # call the plugin; the SAME Secret is referenced from the Argo CD side in
 # configmap-plugin.yaml ("$oci-generator-secret:token") so both ends match.
-# ARTIFACTORY_USER / ARTIFACTORY_PASS map the same way from
+# REGISTRY_USER / REGISTRY_PASS map the same way from
 # oci-generator-registry-creds.
 apiVersion: v1
 kind: ConfigMap
@@ -24,14 +24,14 @@ data:
   config.yaml: |
     listen: ":8080"
     token: "${PLUGIN_TOKEN}"
-    defaultRegistry: artifactory.example.com
+    defaultRegistry: registry.example.com
     requestTimeoutSeconds: 60
     registries:
-      - host: artifactory.example.com
+      - host: registry.example.com
         auth:
           type: basic
-          username: "${ARTIFACTORY_USER}"
-          password: "${ARTIFACTORY_PASS}"
+          username: "${REGISTRY_USER}"
+          password: "${REGISTRY_PASS}"
         allowedRepositories:
           - "apps-oci/**"
       - host: "111122223333.dkr.ecr.us-east-1.amazonaws.com"

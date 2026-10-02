@@ -11,18 +11,19 @@ listen: ":8080"
 token: "${PLUGIN_TOKEN}"
 
 # Used when an ApplicationSet omits `registry`.
-defaultRegistry: artifactory.example.com
+defaultRegistry: registry.example.com
 
 # Bound each getparams.execute call.
 requestTimeoutSeconds: 60
 
 registries:
-  # Artifactory (or any Docker-registry-v2 with basic auth).
-  - host: artifactory.example.com
+  # Any OCI registry (registry-v2) with basic auth — e.g. GHCR, Harbor, Nexus,
+  # Quay, GitLab, or a self-hosted registry.
+  - host: registry.example.com
     auth:
       type: basic
-      username: "${ARTIFACTORY_USER}"
-      password: "${ARTIFACTORY_PASS}"
+      username: "${REGISTRY_USER}"
+      password: "${REGISTRY_PASS}"
     # Restrict which repositories ApplicationSets may target (glob; empty = all).
     allowedRepositories:
       - "apps-oci/**"

@@ -5,7 +5,7 @@
 # False positive here: these ConfigMaps never contain inline secrets. The flagged
 # values are *references* resolved at runtime from Secrets:
 #   - Argo CD secret-ref syntax:  token: "$oci-generator-secret:token"
-#   - environment expansion:      token: "${PLUGIN_TOKEN}" / "${ARTIFACTORY_PASS}"
+#   - environment expansion:      token: "${PLUGIN_TOKEN}" / "${REGISTRY_PASS}"
 # This is the documented security model (DESIGN.md §5): credentials are supplied
 # via env vars / Secret refs and never travel inline or over the ApplicationSet.
 misconfigurations:

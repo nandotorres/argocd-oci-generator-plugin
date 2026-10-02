@@ -14,9 +14,9 @@ func TestParseAndExpand(t *testing.T) {
 
 	raw := []byte(`
 token: ${PLUGIN_TOKEN}
-defaultRegistry: artifactory.example.com
+defaultRegistry: registry.example.com
 registries:
-  - host: artifactory.example.com
+  - host: registry.example.com
     auth:
       type: basic
       username: ${ART_USER}
@@ -34,7 +34,7 @@ registries:
 	assert.Equal(t, 60, c.RequestTimeoutSeconds)
 	assert.Equal(t, "s3cret", c.Token)
 
-	art := c.RegistryFor("artifactory.example.com")
+	art := c.RegistryFor("registry.example.com")
 	require.NotNil(t, art)
 	assert.Equal(t, "svc", art.Auth.Username)
 	assert.Equal(t, "pw", art.Auth.Password)
