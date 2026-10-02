@@ -15,6 +15,7 @@ import (
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/auth"
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/config"
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/generator"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/metrics"
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/registry"
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/server"
 )
@@ -49,13 +50,15 @@ func run() error {
 		return err
 	}
 
+	mx := metrics.New()
 	resolver := auth.NewResolver(cfg)
 	regClient := registry.New(resolver, registry.Options{
 		InsecureSkipVerify: cfg.TLS.InsecureSkipVerify,
 		PlainHTTP:          cfg.TLS.PlainHTTP,
+		Metrics:            mx,
 	})
 	gen := generator.New(regClient, log)
-	srv := server.New(cfg, gen, log)
+	srv := server.New(cfg, gen, log, server.WithMetrics(mx))
 
 	httpServer := &http.Server{
 		Addr:              cfg.Listen,
