@@ -1,80 +1,66 @@
-# ArgoCD OCI ApplicationSet Generator Plugin — Design
-
-> Status: **draft**. This document drives the implementation and the eventual blog post.
+# Design
 
 ## 1. Problem
 
-ArgoCD's `ApplicationSet` can generate Applications from Git (directories/files), clusters,
-SCM providers, pull requests, etc. There is **no first-class way to generate Applications from
-the set of artifacts present in an OCI registry**. Teams that publish Helm charts / OCI artifacts
-(one per app, one per version, one per tenant, ...) cannot say "create/refresh an Application for
-every artifact matching these rules".
+Argo CD's ApplicationSet can generate Applications from Git, clusters, SCM
+providers, and pull requests, but not from the set of artifacts in an OCI
+registry. Teams that publish Helm charts or other OCI artifacts — one per app,
+version, tenant, or environment — have no first-class way to say "create or
+refresh an Application for every artifact that matches these rules".
 
-This project delivers that capability as an **ApplicationSet Plugin Generator** (an out-of-tree
-HTTP service the ApplicationSet controller calls), giving parity with the Git generator plus
-OCI-specific narrowing rules.
+This project provides that as an ApplicationSet plugin generator: an HTTP service
+the ApplicationSet controller calls, with parity to the Git generator plus
+OCI-specific narrowing.
 
-## 2. How ApplicationSet plugin generators work (recap)
+## 2. How plugin generators work
 
-The controller (`applicationset/generators/plugin.go`) talks to an HTTP service:
+The controller calls an HTTP service:
 
 - `POST {baseUrl}/api/v1/getparams.execute`
 - Header `Authorization: Bearer <token>`
-- Body: `{"applicationSetName": "<name>", "input": {"parameters": { ...user rules... }}}`
+- Body: `{"applicationSetName": "<name>", "input": {"parameters": { ... }}}`
 - Response: `{"output": {"parameters": [ {..}, {..} ]}}`
 
-The plugin is wired via a `ConfigMap` (keys `baseUrl`, `token`, optional `requestTimeout`)
-referenced from the ApplicationSet's `plugin.configMapRef`.
+The plugin is referenced from the ApplicationSet via a ConfigMap (keys `baseUrl`,
+`token`, optional `requestTimeout`) named in `plugin.configMapRef`. For each
+returned parameter map the controller renders the template — flattened to
+dot-style keys when `goTemplate: false`, or kept nested when `goTemplate: true`.
 
-The controller then, for each returned parameter map, flattens it (dot-style) when
-`goTemplate: false`, or keeps it nested for `goTemplate: true`, and renders the template.
+### 2.1 Do not delete on error
 
-### 2.1 The critical safety property (do-not-delete-on-error)
+This is the property the whole design turns on. When generation returns an
+**error**, the controller records an error condition and returns early: it does
+not create, update, or delete anything, and existing Applications are left in
+place. A **successful but empty** result, on the other hand, deletes everything
+the ApplicationSet owns.
 
-`applicationset_controller.go` (~L199): if generation returns an **error**, the controller sets an
-error condition and **returns early — it never runs create/update/delete**. Existing Applications
-are left untouched. But a **successful empty result deletes everything** the appset owns.
+So the rule is: any fetch, auth, parse, or partial failure must surface as a
+non-2xx response, which the controller treats as a generator error and makes no
+changes. A truncated or best-effort list is never returned as a 200.
 
-➡️ **Design rule #1:** any fetch/auth/parse/partial failure MUST surface as a non-2xx HTTP
-response (→ generator error → no deletions). We never "best-effort" a truncated list into a 200.
-
-## 3. Responsibilities & non-goals
+## 3. Scope
 
 In scope:
-- List artifacts (tags) in an OCI repository and emit one parameter set per matching artifact.
-- Narrowing rules: tag regex, semver constraints, artifact/media-type filter, annotation match,
-  include/exclude semantics, sort + limit (e.g. "latest N").
-- Security-first, **centralized** credentials: basic auth (Artifactory / any user:pass registry)
-  and ECR (IRSA / instance role + optional STS AssumeRole).
-- Fail closed (rule #1). Structured logging, metrics, health endpoints.
 
-Out of scope (v1):
-- Pushing/mutating artifacts. Read-only.
-- Per-ApplicationSet credentials embedded in the appset spec (see §5 threat model).
+- List tags in an OCI repository and emit one parameter set per matching artifact.
+- Narrowing rules: tag regex, semver constraints, artifact/media-type filter,
+  annotation matching, include/exclude, sort, and limit (for example "latest N").
+- Centralized credentials: basic auth (any registry-v2 with user/password) and
+  ECR (IRSA / instance role, optionally assuming a role).
+- Fail closed (§2.1). Structured logging and health endpoints.
+
+Out of scope:
+
+- Pushing or mutating artifacts; this is read-only.
+- Per-ApplicationSet credentials in the spec (see §5).
 - Non-OCI registries.
 
 ## 4. Parameter model
 
-### 4.0 Canonical example (existence check)
+### 4.0 Existence check
 
-Given this Artifactory artifact that a team wants an App created for *iff it exists*:
-
-```
-https://artifactory.example.com/ui/repos/tree/General/
-  apps-oci/orders-api/orders-api/dev/dev-current
-  └ repo key ────┘└──────── image path ────────────┘ └ tag ┘
-```
-
-maps to:
-
-| field      | value                                                              |
-|------------|--------------------------------------------------------------------|
-| registry   | `artifactory.example.com`                                     |
-| repository | `apps-oci/orders-api/orders-api/dev`         |
-| tag        | `dev-current`                                                      |
-| ref        | `artifactory.example.com/apps-oci/.../dev:dev-current`|
-
-ApplicationSet snippet:
+The simplest case: create an Application only if a specific tag exists. Given a
+reference `registry.example.com/my-org/my-app:stable`, the ApplicationSet is:
 
 ```yaml
 generators:
@@ -83,15 +69,16 @@ generators:
       requeueAfterSeconds: 120
       input:
         parameters:
-          registry: artifactory.example.com
-          repository: apps-oci/orders-api/orders-api/dev
-          tags: [dev-current]        # exact-match convenience; existence check
+          registry: registry.example.com
+          repository: my-org/my-app
+          tags: [stable]        # exact-match existence check
 ```
 
-Behavior: tag present -> 1 App; tag absent (registry OK) -> 0 Apps; registry/auth
-failure -> generator error -> **no Apps deleted** (rule #1).
+Behavior: tag present → one Application; tag absent but registry reachable → zero
+Applications; registry or auth failure → generator error → no Applications
+deleted (§2.1).
 
-### 4.1 Input (from the ApplicationSet `plugin.input.parameters`)
+### 4.1 Input
 
 ```yaml
 generators:
@@ -100,125 +87,126 @@ generators:
       requeueAfterSeconds: 300
       input:
         parameters:
-          repository: my-org/my-app          # required (repo path)
-          registry: myco.jfrog.io            # optional; else server default
-          tags: [dev-current, stable]        # optional exact-match allowlist (existence check)
+          repository: my-org/my-app          # required
+          registry: registry.example.com     # optional; else server default
+          tags: [stable, dev]                # optional exact-match (existence check)
           tagFilters:                        # all must match (AND)
             - regex: "^v\\d+\\.\\d+\\.\\d+$"
             - semver: ">= 1.2.0, < 2.0.0"
-          excludeTagFilters:                 # any match => excluded
+          excludeTagFilters:                 # any match excludes the tag
             - regex: ".*-rc.*"
           artifactType: application/vnd.cncf.helm.config.v1+json  # optional
-          annotationSelectors:               # OCI manifest/config annotations (AND)
+          annotationSelectors:               # OCI annotations (AND)
             - key: org.opencontainers.image.vendor
-              operator: In                   # In|NotIn|Exists|DoesNotExist
+              operator: In                   # In | NotIn | Exists | DoesNotExist
               values: [my-org]
-          sort: semver                       # semver|alpha|created
-          order: desc                        # asc|desc
+          sort: semver                       # semver | alpha | created
+          order: desc                        # asc | desc
           limit: 20                          # keep first N after sort
 ```
 
-Rules are validated strictly; unknown/invalid rules => error (rule #1, fail closed).
+Input is validated strictly; unknown or invalid fields are an error (§2.1).
 
-### 4.2 Output (one map per artifact; nested so both goTemplate & flatten work)
+### 4.2 Output
+
+One parameter map per artifact, nested so both `goTemplate` modes work:
 
 ```yaml
 oci:
-  registry:   myco.jfrog.io
+  registry:   registry.example.com
   repository: my-org/my-app
   tag:        v1.4.2
   digest:     sha256:...
-  ref:        myco.jfrog.io/my-org/my-app:v1.4.2
-  pinnedRef:  myco.jfrog.io/my-org/my-app@sha256:...   # digest-pinned, recommended for GitOps
+  ref:        registry.example.com/my-org/my-app:v1.4.2
+  pinnedRef:  registry.example.com/my-org/my-app@sha256:...   # pin to this for GitOps
   mediaType:  application/vnd.oci.image.manifest.v1+json
   artifactType: application/vnd.cncf.helm.config.v1+json
-  createdAt:  2024-05-01T12:00:00Z                     # from org.opencontainers.image.created if present
+  createdAt:  2024-05-01T12:00:00Z                     # from org.opencontainers.image.created
   annotations:
     org.opencontainers.image.revision: abc123
-  semver:                                              # present when tag is valid semver
+  semver:                                              # present when the tag is semver
     major: 1
     minor: 4
     patch: 2
     prerelease: ""
 ```
 
-## 4.3 Wildcards & captures (parity with the Git directory generator, extended)
+### 4.3 Wildcards and captures
 
-The Git generator lets you write `some/repo/*/env/*` and consume the matched
-segments (`path[0]`, `path[1]`, `path.basename`, ...) in the template. We keep that
-ergonomics for OCI **and add named captures**, across two axes:
+The Git directory generator lets you write `some/repo/*/env/*` and consume the
+matched segments in the template. This keeps that ergonomics for OCI and adds
+named captures, across two axes:
 
-- **Repository namespace** (enumerated from the registry catalog):
-  `repository: "apps-oci/{team}/**/{env}"`
-- **Tag**: `tagPattern: "{something}-current"`
+- repository namespace, enumerated from the registry catalog:
+  `repository: "apps/{team}/**/{env}"`
+- tag: `tagPattern: "{name}-current"`
 
-### Glob syntax (not regex; `.` is literal)
+Glob syntax (not regex; `.` is literal):
 
-| token      | meaning                                              | capture |
-|------------|------------------------------------------------------|---------|
-| `*`        | one path segment (no `/`) / any run within a tag     | yes (anonymous, positional) |
-| `**`       | zero or more path segments (globstar), repo only     | yes (anonymous, positional) |
-| `?`        | a single character                                   | no      |
-| `{name}`   | one segment (repo) / minimal run (tag), **named**    | yes     |
-| other      | literal (regexp-escaped)                              | n/a     |
+| token    | meaning                                              | captured         |
+|----------|------------------------------------------------------|------------------|
+| `*`      | one path segment, or a run within a tag              | yes (positional) |
+| `**`     | zero or more path segments (repository only)         | yes (positional) |
+| `?`      | a single character                                   | no               |
+| `{name}` | one segment (repository) or a run (tag), named       | yes              |
+| other    | literal                                              | —                |
 
-Canonical example `apps-oci/.**/**/.*/{something}-current` becomes, in this
-syntax, e.g. `repository: "apps-oci/**/{env}"` + `tagPattern: "{something}-current"`.
+Discovery:
 
-### How matching drives discovery
+- A `repository` with no wildcard is queried directly.
+- A `repository` with wildcards lists the registry catalog (`GET /v2/_catalog`),
+  filters it by the literal prefix before the first wildcard, then matches the
+  compiled pattern. Catalog failures are an error (§2.1).
+- For each matched repository, tags are listed and matched against `tagPattern`,
+  `tags`, and `tagFilters`.
 
-- If `repository` contains no wildcard -> a single repository is queried directly.
-- If it contains wildcards -> the registry **catalog** (`GET /v2/_catalog`) is
-  listed, filtered by the literal prefix (before the first wildcard) for perf, then
-  matched against the compiled pattern. Catalog access failures -> error (rule #1).
-- For each matched repository, tags are listed and matched against `tagPattern` /
-  `tags` / `tagFilters`.
-
-### Exposed capture parameters (added to the output of §4.2)
+Captures are added to the output:
 
 ```yaml
 oci:
-  captures:                 # merged named captures (repo + tag); names must be unique
+  captures:                    # merged named captures (repository + tag)
     team: payments
-    env: dev
-    something: orders-api
-  wildcards: [payments/x, dev]   # anonymous * / ** captures, in pattern order
-  repositorySegments: [apps-oci, payments, x, dev]
+    env: prod
+    name: web
+  wildcards: [payments/x, prod]   # positional captures, in pattern order
+  repositorySegments: [apps, payments, x, prod]
 ```
 
-Usage in a template: `{{ .oci.captures.env }}`, `{{ index .oci.wildcards 0 }}`.
-Duplicate capture names across repo+tag patterns are rejected at request time
-(validation error -> rule #1).
+Template usage: `{{ .oci.captures.env }}`, `{{ index .oci.wildcards 0 }}`.
+Duplicate capture names across the repository and tag patterns are rejected at
+request time (§2.1).
 
-## 5. Security model (design rule #2: credentials never come from the appset)
+## 5. Security model
 
-Threat: ApplicationSets are often self-service. If auth config lived in the appset spec, any
-appset author could point the plugin at arbitrary registries with platform creds, or exfiltrate
-tokens via crafted templates. Therefore:
+ApplicationSets are often self-service. If auth lived in the ApplicationSet spec,
+any author could point the plugin at arbitrary registries with platform
+credentials, or try to exfiltrate tokens through a crafted template. So:
 
-- The **platform team** configures a **server-side registry credential map**. The appset only
-  chooses a `registry` + `repository` (both validated against an allowlist/policy).
-- Credentials are resolved from **mounted k8s Secrets / env / cloud identity**, never from the wire.
-- Auth providers (pluggable `Authenticator` per registry host):
-  - `basic` — username/password (Artifactory & any Docker-registry-v2 with basic auth). Values
-    from env/secret file refs.
-  - `ecr` — uses the AWS chain (IRSA, env, instance profile). Optional `roleArn` → STS
-    AssumeRole, then ECR `GetAuthorizationToken`. Honors registry roles as required.
+- The platform team configures a server-side registry/credential map. The
+  ApplicationSet only chooses a `registry` and `repository`, both validated.
+- Credentials come from mounted Secrets, env, or cloud identity — never from the
+  request.
+- Auth providers, per registry host:
+  - `basic` — username/password, from env/Secret references.
+  - `ecr` — the AWS credential chain (IRSA, env, instance profile); optional
+    `roleArn` to assume a role before calling `GetAuthorizationToken`.
   - `anonymous` — public registries.
-- Optional `allowedRepositories` per registry (glob) to constrain what an appset may target.
-- The plugin's own `token` (bearer) is validated on every request (constant-time compare).
+- Optional `allowedRepositories` per registry (glob) constrains what an
+  ApplicationSet may target.
+- The plugin's bearer `token` is checked on every request with a constant-time
+  compare.
 
-Server config (mounted file, hot-reload optional), example:
+Example server config:
 
 ```yaml
 listen: :8080
-defaultRegistry: myco.jfrog.io
+defaultRegistry: registry.example.com
 registries:
-  - host: myco.jfrog.io
+  - host: registry.example.com
     auth:
       type: basic
-      username: ${ARTIFACTORY_USER}      # env expansion
-      password: ${ARTIFACTORY_PASS}
+      username: ${REGISTRY_USER}
+      password: ${REGISTRY_PASS}
     allowedRepositories: ["my-org/*"]
   - host: 123456789012.dkr.ecr.us-east-1.amazonaws.com
     auth:
@@ -229,54 +217,52 @@ tls:
   insecureSkipVerify: false
 ```
 
-## 6. Component architecture
+## 6. Architecture
 
 ```
-cmd/plugin            main: load config, wire deps, run server
-internal/config       config load/validate + env expansion
-internal/server       HTTP server: bearer auth mw, /api/v1/getparams.execute, /healthz, /metrics
-internal/auth         Authenticator interface + basic/ecr/anonymous providers + keychain resolver
-internal/registry     go-containerregistry wrapper: ListTags, Head/Get manifest, annotations
-internal/generator    core: apply input rules -> registry queries -> filter/sort/limit -> params
-internal/oci          value objects: Artifact, Reference, param mapping
+cmd/plugin          load config, wire dependencies, run the server
+internal/config     config load/validate + ${VAR} expansion
+internal/server     HTTP server: bearer auth, /api/v1/getparams.execute, health
+internal/auth       Authenticator interface + basic/ecr/anonymous providers
+internal/registry   go-containerregistry wrapper: catalog, tags, manifests
+internal/generator  apply input rules → registry queries → filter/sort/limit
+internal/oci        artifact value object + parameter mapping
+internal/pattern    glob-with-captures matcher
 ```
 
-Key dependencies:
-- `github.com/google/go-containerregistry` — registry client + `authn` abstraction + in-mem
-  registry for tests.
-- `github.com/awslabs/amazon-ecr-credential-helper/ecr-login` — ECR keychain.
-- `github.com/Masterminds/semver/v3` — semver parsing/constraints/sort.
-- stdlib `log/slog` for logging, `net/http` for server.
+Main dependencies:
 
-## 7. Error handling (rule #1 in practice)
+- `github.com/google/go-containerregistry` — registry client, `authn`
+  abstraction, and an in-memory registry for tests.
+- `github.com/aws/aws-sdk-go-v2` — AWS config, STS AssumeRole, and ECR
+  `GetAuthorizationToken`.
+- `github.com/Masterminds/semver/v3` — semver parsing, constraints, and sorting.
+- stdlib `log/slog` and `net/http`.
 
-- Any error from config resolution, auth, registry calls, or rule evaluation → HTTP 4xx/5xx with
-  `{"error": "..."}`. The controller treats it as a generator error → no deletions.
-- Distinguish client errors (bad input, disallowed repo → 400/403) from upstream/registry
-  failures (→ 502/504). Both still prevent deletion; the status just improves debuggability.
-- Empty-but-valid result (repo genuinely has zero matching tags) returns 200 with `[]`. This is
-  the one case where deletion is *intended* (no artifacts → no apps). Documented + guardable via
-  a `minResults`/`failOnEmpty` option for the paranoid.
+## 7. Error handling
 
-## 8. Testing strategy
+- Any error from config, auth, registry calls, or rule evaluation becomes a
+  4xx/5xx response with `{"error": "..."}`, which the controller treats as a
+  generator error (no deletions).
+- Client errors (bad input, disallowed repository) are 400/403; upstream/registry
+  failures are 502/504. Both prevent deletion; the distinction only helps
+  debugging.
+- An empty-but-valid result (the repository genuinely has no matching tags) is a
+  200 with `[]`. This is the one case where deletion is intended. Set
+  `failOnEmpty` to turn an empty result into an error instead.
 
-- Unit: filters (regex/semver/annotation), sort/limit, param mapping, config validation, auth
-  provider selection.
-- Component: spin up `go-containerregistry` in-memory registry, push fake artifacts w/ annotations,
-  run the generator end-to-end over HTTP. Assert output + error/fail-closed behavior.
-- ECR: unit-test the AssumeRole/token wiring with mocked STS+ECR clients.
-- Golden tests for the HTTP contract (request/response shapes).
+## 8. Testing
 
-## 9. Release & ops
+- Unit: filters (regex/semver/annotation), sort/limit, parameter mapping, config
+  validation, auth provider selection.
+- Component: push fake artifacts into an in-memory registry and run the generator
+  end-to-end over HTTP; assert output and fail-closed behavior.
+- ECR: the AssumeRole/token wiring with mocked STS and ECR clients.
+- The HTTP request/response contract.
 
-- Multi-arch container image (distroless, non-root), SBOM, cosign signing.
-- `goreleaser` for binaries + image; GitHub Actions CI (lint, test, race, build) + release.
-- Helm chart / raw manifests (Deployment, Service, ConfigMap, Secret example, NetworkPolicy).
-- Versioned OCI plugin image published to GHCR.
+## 9. Release
 
-## 10. Try-it-out
-
-- `make dev` runs the server locally against a local registry (or your Artifactory/ECR).
-- `hack/` scripts + example manifests to install into an existing ArgoCD and a sample
-  ApplicationSet that renders one App per chart version.
-```
+- Multi-arch container image (minimal, non-root), SBOM, and cosign signing.
+- `goreleaser` for binaries and image; GitHub Actions for CI and release.
+- Raw manifests (Deployment, Service, ConfigMaps, Secret example).
+- Image published to GHCR.
