@@ -32,9 +32,9 @@ func newTestServer(t *testing.T, gen Generator) *httptest.Server {
 	// Parse populates internal (compiled) allowlist patterns.
 	parsed, err := config.Parse([]byte(`
 token: s3cret
-defaultRegistry: artifactory.example.com
+defaultRegistry: registry.example.com
 registries:
-  - host: artifactory.example.com
+  - host: registry.example.com
     auth: { type: anonymous }
     allowedRepositories: ["apps-oci/**"]
 `))
@@ -92,7 +92,7 @@ func TestHappyPath(t *testing.T) {
 
 	// The server resolved defaults and wired the allowlist predicate.
 	require.NotNil(t, gen.gotQ)
-	assert.Equal(t, "artifactory.example.com", gen.gotQ.Registry)
+	assert.Equal(t, "registry.example.com", gen.gotQ.Registry)
 	assert.NotNil(t, gen.gotQ.AllowRepository)
 	assert.True(t, gen.gotQ.AllowRepository("apps-oci/anything"))
 	assert.False(t, gen.gotQ.AllowRepository("other/thing"))
@@ -112,7 +112,7 @@ func TestGeneratorErrorIsBadGateway(t *testing.T) {
 func TestInvalidInputIsBadRequest(t *testing.T) {
 	srv := newTestServer(t, &stubGen{})
 	// Missing required repository.
-	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"registry":"artifactory.example.com"}}}`)
+	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"registry":"registry.example.com"}}}`)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }

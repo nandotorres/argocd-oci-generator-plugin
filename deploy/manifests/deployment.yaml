@@ -36,16 +36,16 @@ spec:
                   name: oci-generator-secret
                   key: token
             # Registry credentials (basic auth example).
-            - name: ARTIFACTORY_USER
+            - name: REGISTRY_USER
               valueFrom:
                 secretKeyRef:
                   name: oci-generator-registry-creds
-                  key: artifactory-user
-            - name: ARTIFACTORY_PASS
+                  key: registry-user
+            - name: REGISTRY_PASS
               valueFrom:
                 secretKeyRef:
                   name: oci-generator-registry-creds
-                  key: artifactory-pass
+                  key: registry-pass
           readinessProbe:
             httpGet:
               path: /readyz

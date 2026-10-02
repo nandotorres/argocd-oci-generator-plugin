@@ -51,11 +51,11 @@ func TestBasicAuthenticator(t *testing.T) {
 	c := mustConfig(t, `
 token: x
 registries:
-  - host: artifactory.example.com
+  - host: registry.example.com
     auth: { type: basic, username: "${U}", password: "${P}" }
 `)
 	r := NewResolver(c)
-	a, err := r.Authenticator(context.Background(), "artifactory.example.com")
+	a, err := r.Authenticator(context.Background(), "registry.example.com")
 	require.NoError(t, err)
 	cfg := authConfig(t, a)
 	assert.Equal(t, "svc", cfg.Username)

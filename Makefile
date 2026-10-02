@@ -86,8 +86,8 @@ image: ## Build the container image
 dev: build ## Run the server locally with the example config
 	CONFIG_PATH=$(CURDIR)/deploy/config.example.yaml \
 	PLUGIN_TOKEN=$${PLUGIN_TOKEN:-dev-token} \
-	ARTIFACTORY_USER=$${ARTIFACTORY_USER:-dev} \
-	ARTIFACTORY_PASS=$${ARTIFACTORY_PASS:-dev} \
+	REGISTRY_USER=$${REGISTRY_USER:-dev} \
+	REGISTRY_PASS=$${REGISTRY_PASS:-dev} \
 	LOG_FORMAT=text LOG_LEVEL=debug \
 	./bin/plugin
 
