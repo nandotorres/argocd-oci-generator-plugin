@@ -147,3 +147,16 @@ func TestQuestionMark(t *testing.T) {
 	_, _, ok = p.Match("v12")
 	assert.False(t, ok)
 }
+
+// Found by FuzzCompileMatch: a pattern containing invalid UTF-8 used to compile
+// successfully, but the literal prefix was built from decoded runes and so
+// contained U+FFFD. That prefix is used to narrow the registry catalog, so
+// matching repositories were silently dropped and the generator returned a
+// successful empty result, which deletes Applications. It must fail closed.
+func TestCompileRejectsInvalidUTF8(t *testing.T) {
+	for _, mode := range []Mode{ModePath, ModeTag} {
+		p, err := Compile("apps/\xc2bad/**", mode)
+		assert.Error(t, err, "invalid UTF-8 pattern must be rejected")
+		assert.Nil(t, p)
+	}
+}
