@@ -6,6 +6,14 @@ name: pr-agent
 #
 # Requires one repository secret: GEMINI_API_KEY (free tier, aistudio.google.com).
 # Comment /review, /improve, /ask ... on a PR to invoke it manually.
+#
+# Secret-exfiltration safety:
+#   - Uses `pull_request`, NOT `pull_request_target`. GitHub withholds secrets
+#     from fork PRs, so a fork that rewrites this workflow gets an empty key.
+#   - Fork PRs are skipped explicitly as well (belt and braces).
+#   - `issue_comment` DOES run with secrets (always from the default branch's
+#     copy of this file, so it cannot be modified by a PR), hence /commands are
+#     restricted to OWNER/MEMBER/COLLABORATOR to stop strangers burning quota.
 
 on:
   pull_request:
@@ -24,10 +32,22 @@ jobs:
   review:
     name: ai review
     runs-on: ubuntu-latest
-    # Skip bot-authored events, and only act on comments that belong to a PR.
+    # Security gates (see the note at the top of this file):
+    #  - never run for PRs opened from a fork: `pull_request` withholds secrets
+    #    from forks, so the job would fail anyway, and this keeps the key well
+    #    away from untrusted branches;
+    #  - only honour /commands from trusted authors, since `issue_comment` runs
+    #    with secrets and anyone can comment on a public PR;
+    #  - ignore bots.
     if: >-
       github.event.sender.type != 'Bot' &&
-      (github.event_name == 'pull_request' || github.event.issue.pull_request)
+      (
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name == github.repository) ||
+        (github.event_name == 'issue_comment' &&
+         github.event.issue.pull_request &&
+         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      )
     permissions:
       contents: read
       pull-requests: write # post review comments
