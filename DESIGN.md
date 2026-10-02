@@ -1,11 +1,14 @@
 # Design
 
+Install and usage are in [README.md](README.md). This file is the rationale
+and the HTTP contract.
+
 ## 1. Problem
 
 Argo CD doesn't provide a first-class ApplicationSet generator for OCI
 registries. For example, if your teams publish Helm charts or other OCI
 artifacts, there's no built-in way to create an Application per artifact that
-matches some rules — the way the Git generator does for files and directories.
+matches some rules, the way the Git generator does for files and directories.
 
 This project adds that as an ApplicationSet plugin generator: an HTTP service the
 ApplicationSet controller calls, with parity to the Git generator plus
@@ -22,7 +25,7 @@ The controller calls an HTTP service:
 
 The plugin is referenced from the ApplicationSet via a ConfigMap (keys `baseUrl`,
 `token`, optional `requestTimeout`) named in `plugin.configMapRef`. For each
-returned parameter map the controller renders the template — flattened to
+returned parameter map the controller renders the template, flattened to
 dot-style keys when `goTemplate: false`, or kept nested when `goTemplate: true`.
 
 ### 2.1 Do not delete on error
@@ -148,7 +151,7 @@ Glob syntax (not regex; `.` is literal):
 | `**`     | zero or more path segments (repository only)         | yes (positional) |
 | `?`      | a single character                                   | no               |
 | `{name}` | one segment (repository) or a run (tag), named       | yes              |
-| other    | literal                                              | —                |
+| other    | literal                                              | no               |
 
 Discovery:
 
@@ -183,13 +186,13 @@ credentials, or try to exfiltrate tokens through a crafted template. So:
 
 - The platform team configures a server-side registry/credential map. The
   ApplicationSet only chooses a `registry` and `repository`, both validated.
-- Credentials come from mounted Secrets, env, or cloud identity — never from the
+- Credentials come from mounted Secrets, env, or cloud identity, never from the
   request.
 - Auth providers, per registry host:
-  - `basic` — username/password, from env/Secret references.
-  - `ecr` — the AWS credential chain (IRSA, env, instance profile); optional
+  - `basic`: username/password, from env/Secret references.
+  - `ecr`: the AWS credential chain (IRSA, env, instance profile); optional
     `roleArn` to assume a role before calling `GetAuthorizationToken`.
-  - `anonymous` — public registries.
+  - `anonymous`: public registries.
 - Optional `allowedRepositories` per registry (glob) constrains what an
   ApplicationSet may target.
 - The plugin's bearer `token` is checked on every request with a constant-time
@@ -231,11 +234,11 @@ internal/pattern    glob-with-captures matcher
 
 Main dependencies:
 
-- `github.com/google/go-containerregistry` — registry client, `authn`
+- `github.com/google/go-containerregistry`: registry client, `authn`
   abstraction, and an in-memory registry for tests.
-- `github.com/aws/aws-sdk-go-v2` — AWS config, STS AssumeRole, and ECR
+- `github.com/aws/aws-sdk-go-v2`: AWS config, STS AssumeRole, and ECR
   `GetAuthorizationToken`.
-- `github.com/Masterminds/semver/v3` — semver parsing, constraints, and sorting.
+- `github.com/Masterminds/semver/v3`: semver parsing, constraints, and sorting.
 - stdlib `log/slog` and `net/http`.
 
 ## 7. Error handling

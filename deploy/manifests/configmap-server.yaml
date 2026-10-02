@@ -1,17 +1,16 @@
-# The plugin server's own configuration. No secrets live here — only ${VAR}
-# indirections, resolved from the pod's environment at startup.
+# Plugin server config. No secrets here, only ${VAR} indirections expanded from
+# the pod env at startup (unset variables are a startup error).
 #
-# How ${VAR} maps to a Secret (three hops, nothing inline):
-#   Secret key  ->  Deployment env (secretKeyRef)  ->  ${VAR} in this file
-# For example PLUGIN_TOKEN:
-#   Secret oci-generator-secret[token]
-#     -> deployment.yaml env PLUGIN_TOKEN (valueFrom.secretKeyRef)
-#       -> config.yaml token: "${PLUGIN_TOKEN}"   (expanded at load; errors if unset)
-# PLUGIN_TOKEN is the bearer token the ApplicationSet controller must present to
-# call the plugin; the SAME Secret is referenced from the Argo CD side in
-# configmap-plugin.yaml ("$oci-generator-secret:token") so both ends match.
+# Each ${VAR} is three hops from a Secret:
+#   Secret key -> Deployment env (secretKeyRef) -> ${VAR} here
+# e.g. oci-generator-secret[token] -> PLUGIN_TOKEN -> token: "${PLUGIN_TOKEN}".
+# PLUGIN_TOKEN is the bearer token the ApplicationSet controller presents; the
+# Argo CD side points at the same Secret in configmap-plugin.yaml
+# ("$oci-generator-secret:token"), so both ends match.
 # REGISTRY_USER / REGISTRY_PASS map the same way from
 # oci-generator-registry-creds.
+#
+# For ECR, replace this file with deploy/examples/ecr/configmap-server-ecr.yaml.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -34,11 +33,6 @@ data:
           password: "${REGISTRY_PASS}"
         allowedRepositories:
           - "apps-oci/**"
-      - host: "111122223333.dkr.ecr.us-east-1.amazonaws.com"
-        auth:
-          type: ecr
-          region: us-east-1
-          roleArn: "arn:aws:iam::111122223333:role/argocd-ecr-reader"
     tls:
       insecureSkipVerify: false
       plainHTTP: false
