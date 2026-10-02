@@ -145,7 +145,9 @@ func (c *Client) Get(ctx context.Context, host, repository, tag string) (*oci.Ar
 		Digest:     desc.Digest.String(),
 		MediaType:  string(desc.MediaType),
 	}
-	enrich(art, desc.Manifest)
+	if err := enrich(art, desc.Manifest); err != nil {
+		return nil, fmt.Errorf("parsing manifest for %s/%s:%s: %w", host, repository, tag, err)
+	}
 	return art, nil
 }
 
@@ -172,12 +174,16 @@ type manifestMeta struct {
 	} `json:"config"`
 }
 
-// enrich parses the manifest bytes and populates artifact metadata. Parsing
-// failures are non-fatal: we keep the digest/media type we already have.
-func enrich(art *oci.Artifact, raw []byte) {
+// enrich parses the manifest bytes and populates artifact metadata.
+//
+// A parse failure is returned rather than swallowed: artifactType and
+// annotations can be filtered on, so silently dropping them would let a
+// malformed manifest turn into a *successful* result with the artifact missing
+// (which deletes Applications). Fail closed instead (DESIGN.md §2.1).
+func enrich(art *oci.Artifact, raw []byte) error {
 	var m manifestMeta
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return
+		return err
 	}
 
 	// artifactType: OCI 1.1 field if present, else the config media type, which
@@ -203,4 +209,5 @@ func enrich(art *oci.Artifact, raw []byte) {
 			art.CreatedAt = &t
 		}
 	}
+	return nil
 }
