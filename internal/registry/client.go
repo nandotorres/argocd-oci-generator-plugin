@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/auth"
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/oci"
@@ -103,9 +105,31 @@ func (c *Client) ListTags(ctx context.Context, host, repository string) ([]strin
 	}
 	tags, err := remote.List(repo, opts...)
 	if err != nil {
+		// An absent repository is a definitive answer from the registry, not a
+		// failure to get one: it holds zero artifacts, exactly like a repository
+		// with no matching tags. Only a failure to obtain an answer (auth, 5xx,
+		// network) is an error.
+		if isRepositoryAbsent(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("list tags %s/%s: %w", host, repository, err)
 	}
 	return tags, nil
+}
+
+// isRepositoryAbsent reports whether err means "this repository does not exist":
+// registry-v2 NAME_UNKNOWN, or a bare 404 from registries that omit the code.
+func isRepositoryAbsent(err error) bool {
+	var terr *transport.Error
+	if !errors.As(err, &terr) {
+		return false
+	}
+	for _, e := range terr.Errors {
+		if e.Code == transport.NameUnknownErrorCode {
+			return true
+		}
+	}
+	return terr.StatusCode == http.StatusNotFound
 }
 
 // Head resolves a tag to a lightweight artifact via a manifest HEAD.
