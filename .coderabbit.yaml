@@ -1,0 +1,71 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration. Free for public/open-source repositories.
+# Requires installing the CodeRabbit GitHub App once: https://coderabbit.ai
+language: en-US
+early_access: false
+
+reviews:
+  # Terse, no filler. ("assertive" flags more; "chill" is quieter.)
+  profile: chill
+  poem: false
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: true
+  # Don't auto-convert findings into a blocking "Request changes"; keep them as
+  # comments so the merge gate stays owned by CI + the ruleset.
+  request_changes_workflow: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+  # Skip generated / vendored / binary-ish paths.
+  path_filters:
+    - "!**/*.sum"
+    - "!dist/**"
+    - "!bin/**"
+    - "!**/*.sarif"
+    - "!LICENSE"
+
+  # Domain-specific review guidance.
+  path_instructions:
+    - path: "internal/**/*.go"
+      instructions: >
+        This is an Argo CD ApplicationSet plugin generator. Enforce the
+        fail-closed contract: any fetch/auth/parse/partial failure MUST return a
+        non-2xx (generator error) so Argo CD never deletes Applications; only a
+        genuinely empty, successful result returns 200 with []. Check error
+        wrapping, context/timeout propagation, and that credentials are never
+        read from the request (only from server config / cloud identity).
+    - path: "**/*_test.go"
+      instructions: >
+        Prefer table-driven tests. Call out missing coverage for error and
+        fail-closed paths.
+    - path: ".github/workflows/**"
+      instructions: >
+        All third-party actions must be pinned to a full-length commit SHA with
+        a trailing version comment. Flag unpinned actions, overly broad
+        permissions (default to least privilege), and missing concurrency.
+    - path: "deploy/**"
+      instructions: >
+        ConfigMaps must never contain inline secrets; credentials are injected
+        via ${VAR} / Secret references. Flag any hardcoded credential.
+
+  # CodeRabbit's built-in tools. We already run these in CI, so keep the ones
+  # that add signal in-PR and avoid noisy duplication.
+  tools:
+    gitleaks:
+      enabled: true
+    golangci-lint:
+      enabled: true
+    actionlint:
+      enabled: true
+    yamllint:
+      enabled: false
+    markdownlint:
+      enabled: false
+
+chat:
+  auto_reply: true
