@@ -32,13 +32,15 @@ sboms:
 
 # Keyless (Sigstore) signature over the checksum file, which in turn covers
 # every archive + SBOM. cosign v4 emits a single Sigstore bundle (certificate +
-# signature + transparency-log entry). Verify with:
-#   cosign verify-blob --bundle checksums.txt.cosign.bundle \
+# signature + transparency-log entry). The .sigstore.json extension is the
+# conventional name for a Sigstore bundle and is what OpenSSF Scorecard's
+# Signed-Releases check looks for. Verify with:
+#   cosign verify-blob --bundle checksums.txt.sigstore.json \
 #     --certificate-identity-regexp 'https://github.com/<owner>/<repo>' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
 signs:
   - cmd: cosign
-    signature: "${artifact}.cosign.bundle"
+    signature: "${artifact}.sigstore.json"
     args:
       - sign-blob
       - "--yes"
@@ -116,7 +118,7 @@ release:
     ```
     **Verify release archives (cosign keyless, Sigstore bundle):**
     ```
-    cosign verify-blob --bundle checksums.txt.cosign.bundle \
+    cosign verify-blob --bundle checksums.txt.sigstore.json \
       --certificate-identity-regexp 'https://github.com/nandotorres/argocd-oci-generator-plugin' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
     sha256sum --check --ignore-missing checksums.txt
