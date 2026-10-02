@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,15 @@ type ecrProvider struct {
 
 const ecrRefreshMargin = 15 * time.Minute
 
+// logRefreshFailure reports a refresh failure that was absorbed by falling back
+// to a still-valid cached token.
+func (p *ecrProvider) logRefreshFailure(region, roleARN string, err error) {
+	slog.Warn("ECR token refresh failed; using cached token until it expires",
+		slog.String("region", region),
+		slog.String("roleArn", roleARN),
+		slog.Any("error", err))
+}
+
 func newECRProvider() *ecrProvider {
 	return &ecrProvider{
 		cache: map[string]ecrToken{},
@@ -54,13 +64,20 @@ func (p *ecrProvider) authenticator(ctx context.Context, region, roleARN string)
 
 	if !ok || p.now().After(tok.expiresAt.Add(-ecrRefreshMargin)) {
 		fresh, err := p.fetch(ctx, region, roleARN)
-		if err != nil {
+		switch {
+		case err == nil:
+			p.mu.Lock()
+			p.cache[key] = fresh
+			p.mu.Unlock()
+			tok = fresh
+		// A refresh can fail while the cached token is still valid: we refresh
+		// ecrRefreshMargin early precisely so a transient STS/ECR failure does not
+		// take us down. Keep using the cached token until it actually expires.
+		case ok && p.now().Before(tok.expiresAt):
+			p.logRefreshFailure(region, roleARN, err)
+		default:
 			return nil, fmt.Errorf("obtaining ECR token (region=%q role=%q): %w", region, roleARN, err)
 		}
-		p.mu.Lock()
-		p.cache[key] = fresh
-		p.mu.Unlock()
-		tok = fresh
 	}
 
 	return authn.FromConfig(authn.AuthConfig{Username: tok.username, Password: tok.password}), nil
