@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"net/url"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -124,4 +126,87 @@ func TestEnrichParsesAnnotations(t *testing.T) {
 	err := enrich(art, []byte(`{"annotations":{"org.opencontainers.image.revision":"abc"}}`))
 	require.NoError(t, err)
 	assert.Equal(t, "abc", art.Annotations["org.opencontainers.image.revision"])
+}
+
+// A repository that does not exist must read as "no tags", not as an error.
+// This is the "service not yet published for this environment" case: the
+// ApplicationSet should simply create no Application. Returning an error would
+// fail the whole generation - and in a matrix generator that takes every other
+// combination down with it.
+func TestListTagsMissingRepositoryIsEmpty(t *testing.T) {
+	host := startRegistry(t)
+	c := New(anonProvider{}, Options{PlainHTTP: true})
+
+	tags, err := c.ListTags(context.Background(), host, "apps-oci/never/published")
+	require.NoError(t, err, "a missing repository must not be an error")
+	assert.Empty(t, tags)
+}
+
+// But a real failure (here: unreachable registry) must still propagate, so we
+// keep failing closed and Argo CD leaves existing Applications alone.
+func TestListTagsRealFailureStillErrors(t *testing.T) {
+	c := New(anonProvider{}, Options{PlainHTTP: true})
+	_, err := c.ListTags(context.Background(), "127.0.0.1:1", "apps-oci/x")
+	require.Error(t, err, "an unreachable registry must still be an error")
+}
+
+// rawManifest publishes a pre-built manifest verbatim. It is needed because
+// go-containerregistry's mutate cannot set the OCI 1.1 artifactType field, so we
+// push a normal artifact (uploading its blobs) and then re-Put the same manifest
+// with artifactType injected, which is what `oras push --artifact-type` writes.
+type rawManifest struct {
+	raw       []byte
+	mediaType types.MediaType
+}
+
+func (r rawManifest) RawManifest() ([]byte, error)        { return r.raw, nil }
+func (r rawManifest) MediaType() (types.MediaType, error) { return r.mediaType, nil }
+
+func pushORASArtifact(t *testing.T, host, repo, tag, artifactType string, annotations map[string]string) {
+	t.Helper()
+
+	// Upload config + layer blobs via a normal write. The config media type is
+	// deliberately NOT the artifact type, so the assertion can only pass by
+	// reading the OCI 1.1 artifactType field (not the config fallback).
+	img := mutate.ConfigMediaType(empty.Image, "application/vnd.oci.empty.v1+json")
+	seed, err := name.NewTag(host+"/"+repo+":"+tag+"-seed", name.Insecure)
+	require.NoError(t, err)
+	require.NoError(t, remote.Write(seed, img))
+
+	// Re-publish the manifest with the OCI 1.1 artifactType field set.
+	raw, err := img.RawManifest()
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(raw, &m))
+	m["artifactType"] = artifactType
+	if annotations != nil {
+		m["annotations"] = annotations
+	}
+	patched, err := json.Marshal(m)
+	require.NoError(t, err)
+
+	mt, err := img.MediaType()
+	require.NoError(t, err)
+	ref, err := name.NewTag(host+"/"+repo+":"+tag, name.Insecure)
+	require.NoError(t, err)
+	require.NoError(t, remote.Put(ref, rawManifest{raw: patched, mediaType: mt}))
+}
+
+// The ORAS example (deploy/examples/applicationset-helm-oras.yaml) filters on
+// artifactType plus annotations stamped at push time. enrich() prefers the OCI
+// 1.1 artifactType field over the config media type, so cover that path against
+// a real registry rather than only the config-media-type fallback.
+func TestGetORASArtifactTypeAndAnnotations(t *testing.T) {
+	host := startRegistry(t)
+	c := New(anonProvider{}, Options{PlainHTTP: true})
+
+	const helmConfig = "application/vnd.cncf.helm.config.v1+json"
+	pushORASArtifact(t, host, "apps-oci/charts/orders", "1.4.2", helmConfig,
+		map[string]string{"org.opencontainers.image.vendor": "payments"})
+
+	a, err := c.Get(context.Background(), host, "apps-oci/charts/orders", "1.4.2")
+	require.NoError(t, err)
+	assert.Equal(t, helmConfig, a.ArtifactType, "artifactType must come from the OCI 1.1 manifest field")
+	assert.Equal(t, "payments", a.Annotations["org.opencontainers.image.vendor"],
+		"annotations stamped at push time must be surfaced for annotationSelectors")
 }
