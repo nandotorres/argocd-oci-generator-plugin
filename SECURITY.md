@@ -108,5 +108,5 @@ make ruleset       # requires `gh` authenticated with repo admin
 
 It enforces: pull-request reviews (1 approval, stale-dismissal, last-push
 approval, thread resolution), linear history, no force-push/deletion, and
-**all CI/security checks green** before merge — so the supply-chain gate
+**all CI/security checks green** before merge, so the supply-chain gate
 cannot be bypassed on `main`.
