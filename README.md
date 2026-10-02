@@ -270,6 +270,9 @@ Two ConfigMaps:
 - `oci-generator-config`: registries, auth, allowlists. Secrets are `${VAR}`
   from the pod env, never inline.
 
+Metrics: `GET /metrics` exposes Prometheus series for request volume, latency
+and upstream registry calls. See [docs/metrics.md](docs/metrics.md).
+
 Auth types: `basic`, `ecr`, `anonymous`. `tls.insecureSkipVerify` and
 `plainHTTP` apply to every registry; leave them off unless you are talking to
 a local registry.

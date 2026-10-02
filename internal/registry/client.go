@@ -17,6 +17,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/auth"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/metrics"
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/oci"
 )
 
@@ -25,6 +26,7 @@ type Client struct {
 	auth      auth.Provider
 	transport http.RoundTripper
 	insecure  bool // use plain HTTP
+	metrics   *metrics.Metrics
 }
 
 // Options configures the Client.
@@ -33,6 +35,8 @@ type Options struct {
 	InsecureSkipVerify bool
 	// PlainHTTP talks to registries over http:// (for local test registries).
 	PlainHTTP bool
+	// Metrics, when set, records upstream call counts and latency. Optional.
+	Metrics *metrics.Metrics
 }
 
 // New creates a registry Client.
@@ -44,7 +48,13 @@ func New(provider auth.Provider, opts Options) *Client {
 		}
 		tr.TLSClientConfig.InsecureSkipVerify = true
 	}
-	return &Client{auth: provider, transport: tr, insecure: opts.PlainHTTP}
+	return &Client{auth: provider, transport: tr, insecure: opts.PlainHTTP, metrics: opts.Metrics}
+}
+
+// observe records one upstream call. Latency is measured here rather than in
+// the generator so that registry time can be told apart from our own.
+func (c *Client) observe(operation string, start time.Time, err error) {
+	c.metrics.ObserveRegistryCall(operation, err, time.Since(start))
 }
 
 func (c *Client) nameOpts() []name.Option {
@@ -77,7 +87,9 @@ func (c *Client) ListRepositories(ctx context.Context, host, literalPrefix strin
 	if err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	repos, err := remote.Catalog(ctx, reg, opts...)
+	c.observe("catalog", start, err)
 	if err != nil {
 		return nil, fmt.Errorf("catalog %s: %w", host, err)
 	}
@@ -103,7 +115,16 @@ func (c *Client) ListTags(ctx context.Context, host, repository string) ([]strin
 	if err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	tags, err := remote.List(repo, opts...)
+	// An absent repository is a successful answer, not a failed call: counting
+	// it as an error would make "service not published yet" look like registry
+	// trouble on the dashboards.
+	if absent := isRepositoryAbsent(err); absent {
+		c.observe("list_tags", start, nil)
+	} else {
+		c.observe("list_tags", start, err)
+	}
 	if err != nil {
 		// An absent repository is a definitive answer from the registry, not a
 		// failure to get one: it holds zero artifacts, exactly like a repository
@@ -138,7 +159,9 @@ func (c *Client) Head(ctx context.Context, host, repository, tag string) (*oci.A
 	if err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	desc, err := remote.Head(ref, opts...)
+	c.observe("head", start, err)
 	if err != nil {
 		return nil, fmt.Errorf("head %s/%s:%s: %w", host, repository, tag, err)
 	}
@@ -157,7 +180,9 @@ func (c *Client) Get(ctx context.Context, host, repository, tag string) (*oci.Ar
 	if err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	desc, err := remote.Get(ref, opts...)
+	c.observe("get", start, err)
 	if err != nil {
 		return nil, fmt.Errorf("get %s/%s:%s: %w", host, repository, tag, err)
 	}
