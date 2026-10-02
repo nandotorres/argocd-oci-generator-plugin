@@ -47,12 +47,11 @@ cosign verify ghcr.io/nandotorres/argocd-oci-generator-plugin:<version> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-**Release archives** (checksum file is Sigstore-signed):
+**Release archives** (checksum file is Sigstore-signed; cosign v4 bundle):
 
 ```sh
 cosign verify-blob \
-  --certificate checksums.txt.pem \
-  --signature checksums.txt.sig \
+  --bundle checksums.txt.cosign.bundle \
   --certificate-identity-regexp 'https://github.com/nandotorres/argocd-oci-generator-plugin' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt

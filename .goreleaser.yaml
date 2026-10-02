@@ -31,19 +31,18 @@ sboms:
   - artifacts: archive
 
 # Keyless (Sigstore) signature over the checksum file, which in turn covers
-# every archive + SBOM. Verify with:
-#   cosign verify-blob --certificate checksums.txt.pem \
-#     --signature checksums.txt.sig \
+# every archive + SBOM. cosign v4 emits a single Sigstore bundle (certificate +
+# signature + transparency-log entry). Verify with:
+#   cosign verify-blob --bundle checksums.txt.cosign.bundle \
 #     --certificate-identity-regexp 'https://github.com/<owner>/<repo>' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
 signs:
   - cmd: cosign
-    certificate: "${artifact}.pem"
+    signature: "${artifact}.cosign.bundle"
     args:
       - sign-blob
       - "--yes"
-      - "--output-certificate=${certificate}"
-      - "--output-signature=${signature}"
+      - "--bundle=${signature}"
       - "${artifact}"
     artifacts: checksum
     output: true
@@ -127,4 +126,11 @@ release:
     cosign verify ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }} \
       --certificate-identity-regexp 'https://github.com/nandotorres/argocd-oci-generator-plugin' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```
+    **Verify release archives (cosign keyless, Sigstore bundle):**
+    ```
+    cosign verify-blob --bundle checksums.txt.cosign.bundle \
+      --certificate-identity-regexp 'https://github.com/nandotorres/argocd-oci-generator-plugin' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+    sha256sum --check --ignore-missing checksums.txt
     ```
