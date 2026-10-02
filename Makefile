@@ -56,7 +56,7 @@ vuln: ## Run govulncheck (Go vulnerability database)
 scan: ## Run Trivy filesystem scan (vuln + secret + misconfig), same gate as CI
 	@command -v trivy >/dev/null 2>&1 || { echo "install trivy: https://trivy.dev"; exit 1; }
 	trivy fs --scanners vuln,secret,misconfig --ignore-unfixed \
-		--severity CRITICAL,HIGH --exit-code 1 .
+		--ignorefile .trivyignore.yaml --severity CRITICAL,HIGH --exit-code 1 .
 
 .PHONY: audit
 audit: verify vuln scan ## Run the full local supply-chain gate (mirrors release 'guard' job)

@@ -1,0 +1,13 @@
+{
+  "__comment": "Trust policy for the role in the ECR-owning account (444455556666) that the base IRSA/Pod-Identity role (in 111122223333) assumes. Optionally add an ExternalId condition for extra assurance.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::111122223333:role/oci-generator-irsa"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}

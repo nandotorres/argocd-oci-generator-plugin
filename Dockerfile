@@ -4,7 +4,7 @@
 # Chainguard Go dev image: Wolfi-based, continuously patched, includes a shell
 # (required for RUN) and the Go toolchain. Pinned by digest; Dependabot (docker
 # ecosystem) keeps the digest fresh.
-FROM cgr.dev/chainguard/go:latest-dev@sha256:e6c2e263b59bae84e9cad12bb2571ee61626b83165be0f1a867758bf1a6b704b AS build
+FROM cgr.dev/chainguard/go:latest-dev@sha256:1093d76b9e64919e53e1be8b5285aadf6afc51baa67e433a7e16a406a6794f6a AS build
 WORKDIR /src
 
 # Cache modules.
@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 
 # --- runtime stage ---
 # Chainguard static: minimal, nonroot (uid 65532), no shell/package manager.
-FROM cgr.dev/chainguard/static:latest@sha256:324c96273762d9500fd72d973f7d05f0dd15be0668935b3ba02221658041dc9a
+FROM cgr.dev/chainguard/static:latest@sha256:fe55470f22d3259488d9d3739168d8f04da67755f0b69382bc26eda4a7d3d327
 COPY --from=build /out/plugin /usr/local/bin/plugin
 USER 65532:65532
 EXPOSE 8080
