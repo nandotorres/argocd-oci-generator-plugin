@@ -31,7 +31,7 @@ const (
 // Artifact is a single resolved artifact (a tag) in a repository, enriched with
 // the metadata we can cheaply obtain from its manifest.
 type Artifact struct {
-	// Registry is the registry host, e.g. "myco.jfrog.io".
+	// Registry is the registry host, e.g. "registry.example.com".
 	Registry string
 	// Repository is the repository path, e.g. "my-org/my-app".
 	Repository string
@@ -56,7 +56,7 @@ type Artifact struct {
 	Wildcards []string
 }
 
-// Ref returns the tag-qualified reference, e.g. "myco.jfrog.io/my-org/my-app:v1.4.2".
+// Ref returns the tag-qualified reference, e.g. "registry.example.com/my-org/my-app:v1.4.2".
 func (a Artifact) Ref() string {
 	return a.Registry + "/" + a.Repository + ":" + a.Tag
 }

@@ -87,7 +87,7 @@ func mustCompile(t *testing.T, in Input) *Query {
 func TestExistenceCheck(t *testing.T) {
 	f := newFakeClient()
 	f.addArtifact(oci.Artifact{
-		Registry:   "artifactory.example.com",
+		Registry:   "registry.example.com",
 		Repository: "apps-oci/orders-api/orders-api/dev",
 		Tag:        "dev-current",
 		Digest:     "sha256:abc",
@@ -96,7 +96,7 @@ func TestExistenceCheck(t *testing.T) {
 	g := New(f, nil)
 
 	q := mustCompile(t, Input{
-		Registry:   "artifactory.example.com",
+		Registry:   "registry.example.com",
 		Repository: "apps-oci/orders-api/orders-api/dev",
 		Tags:       []string{"dev-current"},
 	})
@@ -106,18 +106,18 @@ func TestExistenceCheck(t *testing.T) {
 
 	got := params[0]["oci"].(map[string]any)
 	assert.Equal(t, "dev-current", got["tag"])
-	assert.Equal(t, "artifactory.example.com/apps-oci/orders-api/orders-api/dev@sha256:abc", got["pinnedRef"])
+	assert.Equal(t, "registry.example.com/apps-oci/orders-api/orders-api/dev@sha256:abc", got["pinnedRef"])
 	assert.Zero(t, f.calls["ListRepositories"], "no catalog call for a literal repository")
 }
 
 // Absent tag (registry reachable) => empty result, not an error.
 func TestExistenceCheckAbsentTagIsEmpty(t *testing.T) {
 	f := newFakeClient()
-	f.tags["artifactory.example.com/apps-oci/orders-api/orders-api/dev"] = []string{"v1", "v2"}
+	f.tags["registry.example.com/apps-oci/orders-api/orders-api/dev"] = []string{"v1", "v2"}
 	g := New(f, nil)
 
 	q := mustCompile(t, Input{
-		Registry:   "artifactory.example.com",
+		Registry:   "registry.example.com",
 		Repository: "apps-oci/orders-api/orders-api/dev",
 		Tags:       []string{"dev-current"},
 	})

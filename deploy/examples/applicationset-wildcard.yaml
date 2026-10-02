@@ -21,7 +21,7 @@ spec:
         requeueAfterSeconds: 300
         input:
           parameters:
-            registry: artifactory.example.com
+            registry: registry.example.com
             repository: "apps-oci/**/{env}"
             tagPattern: "{app}-current"
             # Optional extra narrowing:
