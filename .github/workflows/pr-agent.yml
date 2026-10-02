@@ -1,0 +1,56 @@
+name: pr-agent
+
+# AI review of pull requests using PR-Agent (Apache-2.0) with Gemini Flash.
+# Runs in-workflow and SHA-pinned, so it follows the same supply-chain rules as
+# the rest of CI (no external app with write access to the repo).
+#
+# Requires one repository secret: GEMINI_API_KEY (free tier, aistudio.google.com).
+# Comment /review, /improve, /ask ... on a PR to invoke it manually.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: ai review
+    runs-on: ubuntu-latest
+    # Skip bot-authored events, and only act on comments that belong to a PR.
+    if: >-
+      github.event.sender.type != 'Bot' &&
+      (github.event_name == 'pull_request' || github.event.issue.pull_request)
+    permissions:
+      contents: read
+      pull-requests: write # post review comments
+      issues: write # respond to /commands in PR comments
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - name: PR-Agent
+        uses: the-pr-agent/pr-agent@1d01f24f455bb879c1d9c557ad7de3d72dcc7975 # v0.46.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          config.model: "gemini/gemini-3.8-flash"
+          config.fallback_models: '["gemini/gemini-3.1-flash"]'
+          # Auto-review on PR events; leave the description to the author.
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "false"
+          github_action_config.auto_improve: "true"
+          # Keep output focused.
+          pr_reviewer.require_score_review: "false"
+          pr_reviewer.require_tests_review: "true"
+          pr_reviewer.require_security_review: "true"
+          pr_reviewer.persistent_comment: "true"
+          pr_code_suggestions.persistent_comment: "true"
