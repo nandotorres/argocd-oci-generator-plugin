@@ -16,6 +16,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/oci"
 )
 
 // anonProvider always returns anonymous auth.
@@ -105,4 +107,21 @@ func TestGetArtifactType(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "application/vnd.cncf.helm.config.v1+json", a.ArtifactType,
 		"falls back to config media type when artifactType is absent")
+}
+
+// A manifest we cannot parse must be an error, not a partially-populated
+// artifact: artifactType/annotations are filterable, so silently dropping them
+// could turn a malformed manifest into a successful result with the artifact
+// missing - which deletes Applications (DESIGN.md §2.1).
+func TestEnrichFailsClosedOnBadManifest(t *testing.T) {
+	art := &oci.Artifact{Registry: "r", Repository: "repo", Tag: "t"}
+	err := enrich(art, []byte("{not json"))
+	require.Error(t, err)
+}
+
+func TestEnrichParsesAnnotations(t *testing.T) {
+	art := &oci.Artifact{}
+	err := enrich(art, []byte(`{"annotations":{"org.opencontainers.image.revision":"abc"}}`))
+	require.NoError(t, err)
+	assert.Equal(t, "abc", art.Annotations["org.opencontainers.image.revision"])
 }

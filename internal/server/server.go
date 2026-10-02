@@ -20,6 +20,9 @@ import (
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/generator"
 )
 
+// maxRequestBodyBytes bounds a single getparams.execute request body.
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
 // Generator is the behaviour the server needs; satisfied by *generator.Generator.
 type Generator interface {
 	Generate(ctx context.Context, q *generator.Query) ([]map[string]any, error)
@@ -93,6 +96,11 @@ func (s *Server) handleGetParams(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
+	// Bound the request body. The caller is authenticated by this point, but an
+	// unbounded body is still an easy way to make the process allocate until it
+	// is OOM-killed.
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+
 	var req serviceRequest
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -136,8 +144,14 @@ func (s *Server) handleGetParams(w http.ResponseWriter, r *http.Request) {
 	params, err := s.gen.Generate(ctx, q)
 	if err != nil {
 		// Fail closed: upstream/registry/policy errors must not yield a 2xx.
+		// A policy denial is the caller's fault, so report it as 403 (same
+		// fail-closed outcome, clearer diagnostics) rather than a generic 502.
+		status := http.StatusBadGateway
+		if errors.Is(err, generator.ErrRepositoryNotAllowed) {
+			status = http.StatusForbidden
+		}
 		log.Error("generation failed", slog.Any("error", err))
-		s.writeError(w, r, http.StatusBadGateway, err)
+		s.writeError(w, r, status, err)
 		return
 	}
 

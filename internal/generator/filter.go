@@ -37,17 +37,15 @@ func (q *Query) matchAnnotations(a *oci.Artifact) bool {
 }
 
 // tagSelected applies the tag-level predicates that do not require a manifest:
-// exact tags, tag pattern, include filters and exclude filters.
+// exact tags, include filters and exclude filters.
+//
+// The tag pattern is deliberately NOT evaluated here: callers that need its
+// captures match it themselves, and doing it twice is pure duplicated work.
 func (q *Query) tagSelected(tag string) bool {
 	v := parseSemVer(tag)
 
 	if q.ExactTags != nil && !q.ExactTags[tag] {
 		return false
-	}
-	if q.TagPattern != nil {
-		if _, _, ok := q.TagPattern.Match(tag); !ok {
-			return false
-		}
 	}
 	for _, f := range q.Includes {
 		if !f.matches(tag, v) {
