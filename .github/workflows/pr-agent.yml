@@ -76,12 +76,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          # Model choice is constrained by the Gemini free tier, which applies a
-          # per-model requests-per-minute quota (gemini-3.8-flash is only 5/min).
-          # Fallbacks must be models the key can actually serve - a model that
-          # 404s cannot rescue a rate-limited primary.
-          config.model: "gemini/gemini-2.5-flash"
-          config.fallback_models: '["gemini/gemini-3.8-flash","gemini/gemini-2.5-flash-lite"]'
+          # Model choice is constrained twice over:
+          #  - the Gemini free tier applies a per-model requests-per-minute
+          #    quota (gemini-3.8-flash is 5/min) and flash models intermittently
+          #    return 503 under load, so there must be real fallbacks;
+          #  - fallbacks must be models the key can actually serve. Appearing in
+          #    ListModels is not enough: the 2.5 series is listed but rejected
+          #    for new keys ("no longer available to new users").
+          # Each entry is a distinct model with its own quota bucket, newest
+          # first, ending on the floating alias so this does not silently rot.
+          config.model: "gemini/gemini-3.8-flash"
+          config.fallback_models: '["gemini/gemini-3.5-flash","gemini/gemini-3.5-flash-lite","gemini/gemini-flash-latest"]'
+          # Only gemini-3.8-flash is in pr-agent's built-in token map; without a
+          # size for the others it refuses to use them. All of these are 1M-context
+          # flash models.
+          config.custom_model_max_tokens: "1048576"
           # Auto-review on PR events; leave the description to the author.
           # auto_improve is the call-hungry one (it chunks the diff into several
           # requests) and blows the free-tier quota, so run it on demand with
