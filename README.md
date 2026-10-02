@@ -1,137 +1,126 @@
 # argocd-oci-generator-plugin
 
-An [ArgoCD ApplicationSet **Plugin Generator**](https://argo-cd.readthedocs.io/en/latest/operator-manual/applicationset/Generators-Plugin/)
-that generates Applications from the **artifacts present in an OCI registry** —
-giving you Git-generator-style ergonomics (globs, captured path segments) for OCI,
-plus OCI-specific narrowing (tags, semver, annotations, artifact types).
+An [Argo CD ApplicationSet plugin generator](https://argo-cd.readthedocs.io/en/latest/operator-manual/applicationset/Generators-Plugin/)
+that generates Applications from the contents of an OCI registry. It lists the
+repositories and tags in a registry, applies a set of narrowing rules, and emits
+one parameter set per matching artifact for your ApplicationSet template.
 
-> Status: early / pre-release. See [DESIGN.md](DESIGN.md) for the full rationale.
+Argo CD ships generators for Git, clusters, SCM providers, and pull requests, but
+not for OCI registries. If you publish Helm charts or other OCI artifacts, this
+fills that gap with two common shapes:
 
-## Why
+- an **existence check** — create an Application only if a given tag exists, and
+- **discovery** — create one Application for every repository/tag that matches a
+  glob, with the matched values available to the template.
 
-ArgoCD can generate Applications from Git, clusters, SCM, PRs — but not from the
-set of artifacts in an OCI registry. If your teams publish Helm charts or OCI
-artifacts (one per app, per tenant, per version, per environment), you can now say:
+Status: pre-release. See [DESIGN.md](DESIGN.md) for the rationale and internals.
 
-- *"Create an Application **iff** this tag exists"* (existence check), or
-- *"Create one Application for **every** repository/tag matching these rules"*,
-  using wildcards whose captured values feed your template.
+## How an OCI reference maps to parameters
 
-## Highlights
+A tag-qualified OCI reference such as `registry.example.com/my-org/my-app:1.4.2`
+splits into three parts:
 
-- **Git-parity globbing with named captures.** Match across the registry namespace
-  (`apps-oci/**/{env}`) and tags (`{app}-current`); use `{{ .oci.captures.env }}`,
-  `{{ index .oci.wildcards 0 }}` in your template.
-- **Security-first, centralized credentials.** Credentials are configured by the
-  platform team (never in the ApplicationSet). Basic auth (Artifactory / any
-  registry-v2) and ECR (IRSA / instance role + optional STS AssumeRole).
-  Per-registry repository allowlists.
-- **Fails closed — never deletes on error.** Any fetch/auth/parse failure returns
-  a non-2xx response, which ArgoCD treats as a generator error and leaves your
-  Applications untouched. (An intentionally empty result is still allowed.)
-- **Digest-pinned refs** (`oci.pinnedRef`) for immutable GitOps.
-- Tested (unit + component + full-stack integration), distroless image, SBOM,
-  cosign-signed releases.
+| field        | value                   | notes                                  |
+|--------------|-------------------------|----------------------------------------|
+| `registry`   | `registry.example.com`  | the host                               |
+| `repository` | `my-org/my-app`         | everything between the host and the tag |
+| `tag`        | `1.4.2`                 | after the final `:`                    |
 
-## How it maps
+The repository can have any number of path segments, for example
+`registry.example.com/team/group/app`.
 
-An Artifactory artifact browsed at:
+## Pattern matching
 
-```
-https://artifactory.example.com/ui/repos/tree/General/apps-oci/orders-api/orders-api/dev/dev-current
-```
+Repositories and tags are matched with globs, not regexes (`.` is literal):
 
-is, in OCI terms:
+| token    | meaning                                              | captured              |
+|----------|------------------------------------------------------|-----------------------|
+| `*`      | one path segment, or a run within a tag              | yes (positional)      |
+| `**`     | zero or more path segments (repository only)         | yes (positional)      |
+| `?`      | a single character                                   | no                    |
+| `{name}` | one segment (repository) or a run (tag), named       | yes (`captures.name`) |
+| other    | literal                                              | —                     |
 
-| field      | value                                                     |
-|------------|-----------------------------------------------------------|
-| registry   | `artifactory.example.com`                                 |
-| repository | `apps-oci/orders-api/orders-api/dev`                      |
-| tag        | `dev-current`                                             |
+For example `repository: "apps/**/{env}"` with `tagPattern: "{app}-current"`
+matches repositories like `apps/team/web/prod` and tags like `web-current`, and
+exposes `{{ .oci.captures.env }}`, `{{ .oci.captures.app }}`, and the positional
+`{{ index .oci.wildcards 0 }}` in the template.
 
-## Quick start (local, 60 seconds)
+## Quick start
 
-Requires Docker + Go.
+Requires Docker and Go.
 
 ```bash
-make smoke
+make smoke        # throwaway registry + a few artifacts, exercise getparams.execute
+PLUGIN_TOKEN=dev-token make dev   # run the server on :8080 with deploy/config.example.yaml
 ```
 
-This spins up a throwaway registry, publishes a few artifacts, runs the plugin,
-and calls `getparams.execute` for the existence-check and wildcard scenarios.
+For a full cluster walkthrough (kind + Argo CD + registry + plugin), see
+`make e2e`.
 
-Run the server by hand:
+## Parameters
 
-```bash
-PLUGIN_TOKEN=dev-token make dev   # serves on :8080 with deploy/config.example.yaml
-```
+### Input — `plugin.input.parameters`
 
-## Parameter reference
+| key                   | type       | description                                                 |
+|-----------------------|------------|-------------------------------------------------------------|
+| `repository`          | string     | Required. Repository path or glob.                          |
+| `registry`            | string     | Registry host. Defaults to the server's `defaultRegistry`.  |
+| `tags`                | []string   | Exact-match allowlist (existence check).                    |
+| `tagPattern`          | string     | Tag glob with captures.                                     |
+| `tagFilters`          | []filter   | `{regex}` / `{semver}`, all must match.                     |
+| `excludeTagFilters`   | []filter   | Any match excludes the tag.                                 |
+| `artifactType`        | string     | Filter by OCI `artifactType` (or config media type).        |
+| `annotationSelectors` | []selector | `{key, operator: In\|NotIn\|Exists\|DoesNotExist, values}`. |
+| `sort`                | string     | `semver` \| `alpha` \| `created`.                           |
+| `order`               | string     | `asc` \| `desc`.                                            |
+| `limit`               | int        | Keep the first N after sorting.                             |
+| `failOnEmpty`         | bool       | Treat an empty result as an error instead of deleting apps. |
 
-### Input (ApplicationSet `plugin.input.parameters`)
-
-| key                   | type       | description                                                     |
-|-----------------------|------------|-----------------------------------------------------------------|
-| `repository`          | string     | **required.** Repository path or glob (`apps-oci/**/{env}`).    |
-| `registry`            | string     | Registry host. Defaults to the server's `defaultRegistry`.      |
-| `tags`                | []string   | Exact-match allowlist (existence check).                        |
-| `tagPattern`          | string     | Tag glob with captures (`{app}-current`).                       |
-| `tagFilters`          | []filter   | AND of `{regex}` / `{semver}` filters.                          |
-| `excludeTagFilters`   | []filter   | Any match excludes the tag.                                     |
-| `artifactType`        | string     | Filter by OCI artifactType (or config media type).             |
-| `annotationSelectors` | []selector | `{key, operator: In\|NotIn\|Exists\|DoesNotExist, values}`.     |
-| `sort`                | string     | `semver` \| `alpha` \| `created`.                               |
-| `order`               | string     | `asc` \| `desc`.                                                |
-| `limit`               | int        | Keep first N after sorting.                                     |
-| `failOnEmpty`         | bool       | Treat an empty result as an error (never delete apps).          |
-
-Glob syntax (not regex; `.` is literal): `*` one segment, `**` zero+ segments
-(repository only), `?` one char, `{name}` a named capture.
-
-### Output (per matched artifact)
+### Output — one map per matched artifact
 
 ```yaml
 oci:
   registry, repository, tag, digest
-  ref            # registry/repo:tag
-  pinnedRef      # registry/repo@sha256:...   (use this for immutability)
+  ref            # registry/repository:tag
+  pinnedRef      # registry/repository@sha256:...   (pin to this for immutability)
   mediaType, artifactType, createdAt
   annotations: { ... }
-  semver: { major, minor, patch, prerelease, metadata }   # when tag is semver
-  captures:   { <name>: <value> }     # named captures (repo + tag)
-  wildcards:  [ ... ]                  # anonymous * / ** captures, in order
+  semver: { major, minor, patch, prerelease, metadata }   # when the tag is semver
+  captures:   { <name>: <value> }     # named captures (repository + tag)
+  wildcards:  [ ... ]                  # positional * / ** captures, in order
   repositorySegments: [ ... ]
 ```
 
-With `goTemplate: false`, ArgoCD flattens these to dot-style keys
-(`oci.tag`, `oci.captures.env`, ...), mirroring the Git generator.
+With `goTemplate: false`, Argo CD flattens these to dot-style keys (`oci.tag`,
+`oci.captures.env`, ...), as the Git generator does.
 
-## Install into ArgoCD
+See `deploy/examples/` for existence-check, wildcard, and matrix ApplicationSets.
+
+## Install
 
 ```bash
 kubectl apply -k deploy/manifests            # Deployment, Service, ConfigMaps
-# create the secrets out-of-band (see deploy/manifests/secret.example.yaml)
+# create the Secrets separately (see deploy/manifests/secret.example.yaml)
 kubectl apply -f deploy/examples/applicationset-wildcard.yaml
 ```
 
-Configuration lives in two places:
+Configuration lives in two ConfigMaps:
 
-- **Plugin discovery** (`deploy/manifests/configmap-plugin.yaml`): the ConfigMap
-  ArgoCD reads (`baseUrl`, `token`, `requestTimeout`), labeled
+- **Plugin discovery** (`configmap-plugin.yaml`): what Argo CD reads to find the
+  plugin (`baseUrl`, `token`, `requestTimeout`), labeled
   `app.kubernetes.io/part-of: argocd`.
-- **Server config** (`deploy/manifests/configmap-server.yaml` +
-  `deploy/config.example.yaml`): registries, auth, allowlists. Secrets are
-  injected via env vars (`${VAR}`).
+- **Server config** (`configmap-server.yaml`, see `deploy/config.example.yaml`):
+  registries, auth, and repository allowlists. Credentials are referenced as
+  `${VAR}` and resolved from Secrets via the Deployment's env.
 
 ### ECR
 
-Set `auth.type: ecr`, a `region`, and (optionally) a `roleArn` to assume. The pod
-uses its AWS identity (IRSA recommended) to call `GetAuthorizationToken`; tokens
-are cached until shortly before expiry.
-
-See **[`deploy/examples/ecr/`](deploy/examples/ecr/)** for a complete, good-
-practices setup: IRSA / EKS Pod Identity, same- and cross-account, a least-
-privilege IAM policy, trust policies, server config, and a matching
+Set `auth.type: ecr`, a `region`, and optionally a `roleArn` to assume. The pod
+uses its AWS identity (IRSA or EKS Pod Identity recommended) to call
+`GetAuthorizationToken`; tokens are cached until shortly before they expire.
+`deploy/examples/ecr/` has a complete setup: IRSA / Pod Identity, same- and
+cross-account, a least-privilege IAM policy, trust policies, and a matching
 ApplicationSet.
 
 ## Development
@@ -144,17 +133,17 @@ make cover    # coverage summary
 make image    # container image
 ```
 
-Architecture (see [DESIGN.md](DESIGN.md)):
+Layout:
 
 ```
-cmd/plugin            entrypoint
-internal/config       config load/validate + ${ENV} expansion
-internal/server       HTTP contract, bearer auth, fail-closed error mapping
-internal/auth         basic / ecr / anonymous authenticators
-internal/registry     go-containerregistry wrapper (catalog, tags, manifests)
-internal/generator    input model, filters, sort/limit, orchestration
-internal/pattern      glob-with-captures matcher (the crux)
-internal/oci          Artifact value object + parameter mapping
+cmd/plugin          entrypoint
+internal/config     config load/validate + ${VAR} expansion
+internal/server     HTTP contract, bearer auth, fail-closed error mapping
+internal/auth       basic / ecr / anonymous authenticators
+internal/registry   go-containerregistry wrapper (catalog, tags, manifests)
+internal/generator  input model, filters, sort/limit, orchestration
+internal/pattern    glob-with-captures matcher
+internal/oci        artifact value object + parameter mapping
 ```
 
 ## License
