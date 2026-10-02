@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/config"
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/generator"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/metrics"
 )
 
 type stubGen struct {
@@ -163,4 +165,39 @@ func TestOversizedBodyRejected(t *testing.T) {
 	resp := do(t, srv, "s3cret", huge)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestMetricsEndpointAndCounters(t *testing.T) {
+	mx := metrics.New()
+	gen := &stubGen{params: []map[string]any{{"oci": map[string]any{"tag": "v1"}}}}
+	parsed, err := config.Parse([]byte("token: s3cret\ndefaultRegistry: registry.example.com\nregistries:\n  - host: registry.example.com\n    auth: { type: anonymous }\n"))
+	require.NoError(t, err)
+	srv := httptest.NewServer(New(parsed, gen, nil, WithMetrics(mx)).Handler())
+	t.Cleanup(srv.Close)
+
+	// One success and one auth failure, so both code paths are recorded.
+	do(t, srv, "s3cret", `{"input":{"parameters":{"repository":"a/b"}}}`).Body.Close()
+	do(t, srv, "wrong", `{"input":{"parameters":{"repository":"a/b"}}}`).Body.Close()
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	out := string(body)
+
+	assert.Contains(t, out, `ocigen_getparams_requests_total{code="200"} 1`)
+	assert.Contains(t, out, `ocigen_getparams_requests_total{code="401"} 1`)
+	assert.Contains(t, out, "ocigen_getparams_duration_seconds")
+	assert.Contains(t, out, "ocigen_generated_parameters")
+}
+
+// Without the option there is no /metrics endpoint and no instrumentation.
+func TestMetricsDisabledByDefault(t *testing.T) {
+	srv := newTestServer(t, &stubGen{})
+	resp, err := http.Get(srv.URL + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }

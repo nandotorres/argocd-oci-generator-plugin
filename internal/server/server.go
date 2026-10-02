@@ -18,6 +18,7 @@ import (
 
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/config"
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/generator"
+	"github.com/nandotorres/argocd-oci-generator-plugin/internal/metrics"
 )
 
 // maxRequestBodyBytes bounds a single getparams.execute request body.
@@ -30,26 +31,68 @@ type Generator interface {
 
 // Server serves the plugin API.
 type Server struct {
-	cfg *config.Config
-	gen Generator
-	log *slog.Logger
+	cfg     *config.Config
+	gen     Generator
+	log     *slog.Logger
+	metrics *metrics.Metrics
+}
+
+// Option configures a Server.
+type Option func(*Server)
+
+// WithMetrics enables Prometheus instrumentation and the /metrics endpoint.
+func WithMetrics(m *metrics.Metrics) Option {
+	return func(s *Server) { s.metrics = m }
 }
 
 // New creates a Server.
-func New(cfg *config.Config, gen Generator, log *slog.Logger) *Server {
+func New(cfg *config.Config, gen Generator, log *slog.Logger, opts ...Option) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{cfg: cfg, gen: gen, log: log}
+	s := &Server{cfg: cfg, gen: gen, log: log}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // Handler returns the HTTP handler with all routes wired.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/v1/getparams.execute", s.requireToken(s.handleGetParams))
+	mux.HandleFunc("POST /api/v1/getparams.execute", s.instrument(s.requireToken(s.handleGetParams)))
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleHealth)
+	if s.metrics != nil {
+		// Unauthenticated, like the health probes: it carries no artifact data,
+		// and scrapers generally cannot present the plugin's bearer token.
+		mux.Handle("GET /metrics", s.metrics.Handler())
+	}
 	return mux
+}
+
+// statusRecorder captures the status code for instrumentation.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// instrument records request count and duration by status code.
+func (s *Server) instrument(next http.HandlerFunc) http.HandlerFunc {
+	if s.metrics == nil {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		next(rec, r)
+		s.metrics.ObserveRequest(rec.status, time.Since(start))
+	}
 }
 
 // --- request/response types (mirror applicationset/services/plugin) ---
@@ -155,6 +198,7 @@ func (s *Server) handleGetParams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.metrics.ObserveParameters(len(params))
 	log.Info("generated parameters", slog.Int("count", len(params)))
 	s.writeJSON(w, http.StatusOK, serviceResponse{Output: output{Parameters: params}})
 }
