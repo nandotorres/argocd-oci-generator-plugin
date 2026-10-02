@@ -57,7 +57,21 @@ jobs:
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
+      # Secrets aren't available in a job-level `if:`, so check here and skip
+      # cleanly (green, not red) when the key isn't configured yet.
+      - name: Check for GEMINI_API_KEY
+        id: guard
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "${GEMINI_API_KEY}" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GEMINI_API_KEY is not set - skipping AI review. Add the secret to enable it."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: PR-Agent
+        if: steps.guard.outputs.present == 'true'
         uses: the-pr-agent/pr-agent@1d01f24f455bb879c1d9c557ad7de3d72dcc7975 # v0.46.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
