@@ -35,17 +35,19 @@ spec:
                 secretKeyRef:
                   name: oci-generator-secret
                   key: token
-            # Registry credentials (basic auth example).
+            # Basic-auth registries only. Omit the Secret for ECR-only installs.
             - name: REGISTRY_USER
               valueFrom:
                 secretKeyRef:
                   name: oci-generator-registry-creds
                   key: registry-user
+                  optional: true
             - name: REGISTRY_PASS
               valueFrom:
                 secretKeyRef:
                   name: oci-generator-registry-creds
                   key: registry-pass
+                  optional: true
           readinessProbe:
             httpGet:
               path: /readyz

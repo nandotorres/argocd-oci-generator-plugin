@@ -22,6 +22,9 @@ set -euo pipefail
 CLUSTER="${E2E_CLUSTER:-oci-gen-e2e}"
 IMAGE="argocd-oci-generator-plugin:e2e"
 TOKEN="dev-token"
+# Local demo only. bcrypt("e2e"), generated with htpasswd -nbBC 10.
+ARGOCD_ADMIN_PASSWORD="e2e"
+ARGOCD_ADMIN_BCRYPT='$2a$10$vEgjBY7OsKnFwsRY8DS96uweFJs.0r7XqsqHHvTKsFUq5xvBCQd6a'
 HOST_REG_PORT="${E2E_REG_PORT:-5001}"   # host port -> registry NodePort
 NODE_REG_PORT=30001                      # NodePort inside the cluster
 REG_IN_CLUSTER="registry.registry.svc.cluster.local:5000"
@@ -161,7 +164,14 @@ for d in argocd-repo-server argocd-server argocd-applicationset-controller; do
   "${KUBECTL[@]}" -n argocd rollout status deploy/"$d" --timeout=300s
 done
 "${KUBECTL[@]}" -n argocd rollout status statefulset/argocd-application-controller --timeout=300s
-ok "Argo CD (repo-server, server, app + appset controllers) ready"
+# HTTP on :80 (no Chrome self-signed warning) and a known admin password.
+"${KUBECTL[@]}" -n argocd patch configmap argocd-cmd-params-cm --type merge \
+  -p '{"data":{"server.insecure":"true"}}' >/dev/null
+"${KUBECTL[@]}" -n argocd patch secret argocd-secret --type merge \
+  -p "{\"stringData\":{\"admin.password\":\"${ARGOCD_ADMIN_BCRYPT}\",\"admin.passwordMtime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}" >/dev/null
+"${KUBECTL[@]}" -n argocd rollout restart deploy/argocd-server >/dev/null
+"${KUBECTL[@]}" -n argocd rollout status deploy/argocd-server --timeout=180s
+ok "Argo CD ready (UI: admin / ${ARGOCD_ADMIN_PASSWORD} over HTTP)"
 
 # ---------------------------------------------------------------------------
 step "Deploying the plugin and wiring Argo CD"
@@ -342,7 +352,7 @@ fi
 # ---------------------------------------------------------------------------
 step "BREAK: taking the registry down (generator will now error)"
 "${KUBECTL[@]}" -n registry scale deploy/registry --replicas=0
-ok "registry scaled to 0 — the plugin can no longer resolve tags"
+ok "registry scaled to 0; the plugin can no longer resolve tags"
 echo "${c_dim}  Waiting ~45s for generator requeues to fail...${c_off}"
 sleep 45
 
@@ -356,7 +366,7 @@ if "${KUBECTL[@]}" -n argocd get application demo-dev >/dev/null 2>&1; then
   echo "${c_dim}  Plugin logs (recent generation failures):${c_off}"
   "${KUBECTL[@]}" -n argocd logs deploy/oci-generator --tail=3 2>/dev/null | sed 's/^/    /' || true
 else
-  warn "Application was deleted — this is NOT the expected safe behaviour!"
+  warn "Application was deleted; this is NOT the expected safe behaviour!"
   exit 1
 fi
 
@@ -372,12 +382,16 @@ What you just saw:
   • Taking the registry down makes the plugin fail closed (non-2xx), so Argo CD
     PRESERVES the existing Application instead of deleting it.
   • (Contrast: with the registry healthy and the tag removed, the generator
-    returns an empty set and the App would be pruned — a successful empty result,
+    returns an empty set and the App would be pruned: a successful empty result,
     not an error.)
 
-Open the Argo CD UI:
-  kubectl --context kind-${CLUSTER} -n argocd port-forward svc/argocd-server 8080:443
-  # https://localhost:8080  (user: admin)
+Open the Argo CD UI (HTTP, no certificate warning):
+  kubectl --context kind-${CLUSTER} -n argocd port-forward svc/argocd-server 8080:80
+  # http://localhost:8080
+  # user: admin
+  # password: ${ARGOCD_ADMIN_PASSWORD}
+
+If that password is rejected, the generated one is still in the cluster:
   kubectl --context kind-${CLUSTER} -n argocd get secret argocd-initial-admin-secret \\
     -o jsonpath='{.data.password}' | base64 -d; echo
 
