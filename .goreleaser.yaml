@@ -52,20 +52,18 @@ dockers:
     image_templates:
       - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
     use: buildx
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.release   # runtime-only: copies the prebuilt binary
     goarch: amd64
     build_flag_templates:
       - "--platform=linux/amd64"
-      - "--build-arg=VERSION={{ .Version }}"
   - id: arm64
     image_templates:
       - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
     use: buildx
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.release
     goarch: arm64
     build_flag_templates:
       - "--platform=linux/arm64"
-      - "--build-arg=VERSION={{ .Version }}"
 
 docker_manifests:
   - name_template: "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}"
