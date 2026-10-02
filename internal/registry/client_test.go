@@ -125,3 +125,25 @@ func TestEnrichParsesAnnotations(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "abc", art.Annotations["org.opencontainers.image.revision"])
 }
+
+// A repository that does not exist must read as "no tags", not as an error.
+// This is the "service not yet published for this environment" case: the
+// ApplicationSet should simply create no Application. Returning an error would
+// fail the whole generation - and in a matrix generator that takes every other
+// combination down with it.
+func TestListTagsMissingRepositoryIsEmpty(t *testing.T) {
+	host := startRegistry(t)
+	c := New(anonProvider{}, Options{PlainHTTP: true})
+
+	tags, err := c.ListTags(context.Background(), host, "apps-oci/never/published")
+	require.NoError(t, err, "a missing repository must not be an error")
+	assert.Empty(t, tags)
+}
+
+// But a real failure (here: unreachable registry) must still propagate, so we
+// keep failing closed and Argo CD leaves existing Applications alone.
+func TestListTagsRealFailureStillErrors(t *testing.T) {
+	c := New(anonProvider{}, Options{PlainHTTP: true})
+	_, err := c.ListTags(context.Background(), "127.0.0.1:1", "apps-oci/x")
+	require.Error(t, err, "an unreachable registry must still be an error")
+}
