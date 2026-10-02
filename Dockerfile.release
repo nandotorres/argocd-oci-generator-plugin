@@ -1,0 +1,11 @@
+# syntax=docker/dockerfile:1
+
+# Runtime-only image for GoReleaser. GoReleaser builds the binary itself and
+# provides it in the build context as `plugin`, so this image only needs to copy
+# it in. (The root Dockerfile builds from source and is used by CI, `make image`,
+# and the e2e demo.) Keep the base image digest in sync with ./Dockerfile.
+FROM cgr.dev/chainguard/static:latest@sha256:fe55470f22d3259488d9d3739168d8f04da67755f0b69382bc26eda4a7d3d327
+COPY plugin /usr/local/bin/plugin
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/plugin"]
