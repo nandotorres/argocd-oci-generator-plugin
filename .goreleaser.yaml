@@ -47,33 +47,22 @@ signs:
     artifacts: checksum
     output: true
 
-dockers:
-  - id: amd64
-    image_templates:
-      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
-    use: buildx
-    dockerfile: Dockerfile.release   # runtime-only: copies the prebuilt binary
-    goarch: amd64
-    build_flag_templates:
-      - "--platform=linux/amd64"
-  - id: arm64
-    image_templates:
-      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
-    use: buildx
+# Single multi-platform build + manifest (replaces the old dockers +
+# docker_manifests). Dockerfile.release copies the prebuilt binary. An image
+# SBOM is attached by default.
+dockers_v2:
+  - id: default
+    images:
+      - "ghcr.io/nandotorres/argocd-oci-generator-plugin"
+    tags:
+      - "{{ .Version }}"
+      # Only move :latest for stable releases; empty tags are ignored, so a
+      # prerelease (e.g. a -beta) does not repoint :latest.
+      - "{{ if not .Prerelease }}latest{{ end }}"
     dockerfile: Dockerfile.release
-    goarch: arm64
-    build_flag_templates:
-      - "--platform=linux/arm64"
-
-docker_manifests:
-  - name_template: "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
-      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/nandotorres/argocd-oci-generator-plugin:latest"
-    image_templates:
-      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-amd64"
-      - "ghcr.io/nandotorres/argocd-oci-generator-plugin:{{ .Version }}-arm64"
+    platforms:
+      - linux/amd64
+      - linux/arm64
 
 docker_signs:
   - cmd: cosign
