@@ -2,15 +2,14 @@
 
 ## 1. Problem
 
-Argo CD's ApplicationSet can generate Applications from Git, clusters, SCM
-providers, and pull requests, but not from the set of artifacts in an OCI
-registry. Teams that publish Helm charts or other OCI artifacts — one per app,
-version, tenant, or environment — have no first-class way to say "create or
-refresh an Application for every artifact that matches these rules".
+Argo CD doesn't provide a first-class ApplicationSet generator for OCI
+registries. For example, if your teams publish Helm charts or other OCI
+artifacts, there's no built-in way to create an Application per artifact that
+matches some rules — the way the Git generator does for files and directories.
 
-This project provides that as an ApplicationSet plugin generator: an HTTP service
-the ApplicationSet controller calls, with parity to the Git generator plus
-OCI-specific narrowing.
+This project adds that as an ApplicationSet plugin generator: an HTTP service the
+ApplicationSet controller calls, with parity to the Git generator plus
+OCI-specific narrowing (tags, semver, annotations, artifact types).
 
 ## 2. How plugin generators work
 
