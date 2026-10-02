@@ -258,8 +258,103 @@ Not regex. `.` is literal. Use `tagFilters.regex` when you need a real regexp.
 `apps/team/web/prod` + `web-current`, and gives `{{ .oci.captures.env }}`,
 `{{ .oci.captures.app }}`, `{{ index .oci.wildcards 0 }}`.
 
-A literal `repository` is queried directly. A wildcard lists
-`GET /v2/_catalog` first. The registry must support that (ECR does).
+A literal `repository` is queried directly. A wildcard has to enumerate
+repositories first, which needs registry catalog support - see
+[Operating notes](#operating-notes).
+
+## Operating notes
+
+What decides whether a given input shape works against a given registry, how it
+behaves at the edges, and what it costs to run.
+
+### Wildcards in `repository` need catalog support
+
+Enumerating repositories uses `GET /v2/_catalog`. That endpoint is **not part of
+the OCI distribution spec** - it is a Docker Registry v2 extension, and
+registries are free not to implement it. Where it is missing, wildcard
+`repository` patterns cannot work; the generator errors (so nothing is deleted):
+
+```
+listing repositories in <registry>: catalog <registry>: EOF
+```
+
+Verified here: **Artifactory** answers `/v2/_catalog` with `200` and an empty
+body. **ECR**, **GHCR** and **Docker Hub** are also commonly reported not to
+serve it, exposing their own repository-listing APIs instead; `registry:2`,
+Harbor and zot do. Check before relying on wildcards:
+
+```bash
+curl -u "$REGISTRY_USER:$REGISTRY_PASS" 'https://YOUR_REGISTRY/v2/_catalog?n=5'
+```
+
+Everything else needs only `/v2/<name>/tags/list`, which the OCI spec does
+cover: a literal `repository`, `tags`, `tagPattern`, `tagFilters`,
+`excludeTagFilters`, `sort`, `limit`, `artifactType`, `annotationSelectors`.
+
+### A missing repository means "no artifacts", not an error
+
+If the repository itself does not exist (`404 NAME_UNKNOWN`) the result is
+`200 []`, so no Application is created. It is the same answer as an existing
+repository with no matching tags, and it stops a not-yet-published service from
+failing the whole generation - in a matrix that would take every other
+combination down with it. Use `failOnEmpty: true` if an empty result should be
+an error. Auth failures, 5xx and network errors still fail closed.
+
+### Metadata is only fetched when something needs it
+
+Resolving a tag uses a cheap `HEAD`, which gives the digest and media type but
+**no `annotations`, `artifactType` or `createdAt`**. Those appear only when the
+request already requires the manifest: `artifactType`, `annotationSelectors`, or
+`sort: created`. Include one of those to use `{{ .oci.annotations.* }}` in a
+template.
+
+### Sizing and performance
+
+The plugin is a **separate Deployment** with its own requests/limits, unrelated
+to the ApplicationSet controller's. The work is **I/O bound**: nearly all wall
+time is spent waiting on the registry, and memory tracks artifacts in flight,
+not the number of ApplicationSets.
+
+Measured against a real Artifactory (single replica, 68-tag repository):
+
+| Workload | Memory (RSS) | Time |
+|---|---|---|
+| idle | 12 MB | - |
+| one existence check (`HEAD`) | 17 MB | ~250 ms |
+| existence check, repository absent | 17 MB | ~125 ms |
+| 68 tags, manifest `GET` each (`sort: created`) | 22 MB | ~12 s |
+| 5 of those concurrently | 24 MB | ~14 s |
+| 200 existence checks, 20 in parallel | 25 MB | ~3.8 s (~53/s) |
+
+CPU stayed under ~5% of one core. The shipped limits (`500m` / `256Mi`) have
+roughly 10x headroom for existence checks; keep them unless you resolve
+thousands of tags per request. An OOM is fail-closed but hard to diagnose.
+
+**The constraint is time, not resources.** Each manifest costs a round trip
+(~180 ms above) and tags are resolved sequentially, so a request resolving 300
+manifests can exceed a 60 s timeout. Both `requestTimeoutSeconds` (server) and
+`requestTimeout` (Argo CD plugin ConfigMap) must exceed your slowest query.
+
+To keep requests cheap: prefer existence checks and `tagPattern` over anything
+that forces a manifest fetch; narrow with `tags`/`tagFilters` before `limit`
+(`limit` is applied after surviving tags are resolved); and raise
+`requeueAfterSeconds` rather than adding replicas, which help availability, not
+throughput.
+
+#### Worked example: many ApplicationSets, few clusters
+
+At **1200 existence checks per cycle** the plugin needs roughly **25 s of work**
+and stays flat around 25 MB, comfortably inside the shipped resources. What to
+watch is load on the registry:
+
+| `requeueAfterSeconds` | sustained registry load |
+|---|---|
+| 120 | ~20 req/s |
+| 300 | ~8 req/s |
+| 600 | ~4 req/s |
+
+Start at 300-600 s for this shape: the cost is dominated by how often the checks
+repeat, not by how long each one takes.
 
 ## Config
 
