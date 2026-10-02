@@ -4,6 +4,7 @@ package generator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -12,6 +13,11 @@ import (
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/oci"
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/pattern"
 )
+
+// ErrRepositoryNotAllowed is returned when a request targets a repository that
+// the registry's allowlist does not permit. It is a caller (policy) error, so
+// the server reports it as 403 rather than as an upstream failure.
+var ErrRepositoryNotAllowed = errors.New("repository is not allowed")
 
 // RegistryClient is the subset of registry behaviour the generator needs. It is
 // defined here (consumer side) so the generator can be tested with a fake and
@@ -83,7 +89,7 @@ func (g *Generator) resolveRepositories(ctx context.Context, q *Query) ([]string
 	if !q.RepoPattern.HasWildcard() {
 		repo := q.RepoPattern.Raw()
 		if q.AllowRepository != nil && !q.AllowRepository(repo) {
-			return nil, nil, fmt.Errorf("repository %q is not allowed for registry %s", repo, q.Registry)
+			return nil, nil, fmt.Errorf("%w: repository %q for registry %s", ErrRepositoryNotAllowed, repo, q.Registry)
 		}
 		captures[repo] = repoMatch{}
 		return []string{repo}, captures, nil
@@ -130,10 +136,8 @@ func (g *Generator) artifactsForRepo(ctx context.Context, q *Query, repo string,
 
 	var out []oci.Artifact
 	for _, tag := range tags {
-		if !q.tagSelected(tag) {
-			continue
-		}
-
+		// Match the tag pattern once and reuse its captures; the remaining
+		// tag-level predicates are checked separately.
 		tagNamed, tagOrdered := map[string]string{}, []string(nil)
 		if q.TagPattern != nil {
 			named, ordered, ok := q.TagPattern.Match(tag)
@@ -142,6 +146,9 @@ func (g *Generator) artifactsForRepo(ctx context.Context, q *Query, repo string,
 			}
 			tagNamed = named
 			tagOrdered = pattern.Anonymous(ordered)
+		}
+		if !q.tagSelected(tag) {
+			continue
 		}
 
 		var art *oci.Artifact

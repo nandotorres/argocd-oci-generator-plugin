@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -129,4 +131,36 @@ func TestUnconfiguredRegistryIsForbidden(t *testing.T) {
 	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"registry":"evil.example.com","repository":"apps-oci/x"}}}`)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+// A policy denial is the caller's fault: report 403, not a generic 502. Both
+// are fail-closed (no deletions); this is about diagnosability.
+func TestDisallowedRepositoryReturns403(t *testing.T) {
+	gen := &stubGen{err: fmt.Errorf("%w: repository %q for registry x",
+		generator.ErrRepositoryNotAllowed, "other/thing")}
+	srv := newTestServer(t, gen)
+
+	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"repository":"other/thing"}}}`)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+// Upstream/registry failures stay 502.
+func TestUpstreamFailureReturns502(t *testing.T) {
+	gen := &stubGen{err: errors.New("registry unreachable")}
+	srv := newTestServer(t, gen)
+
+	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"repository":"apps-oci/a"}}}`)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+}
+
+// An oversized body must be rejected rather than allocated.
+func TestOversizedBodyRejected(t *testing.T) {
+	srv := newTestServer(t, &stubGen{})
+	huge := `{"applicationSetName":"` + strings.Repeat("a", maxRequestBodyBytes+1) + `"}`
+
+	resp := do(t, srv, "s3cret", huge)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }

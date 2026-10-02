@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,6 +13,13 @@ import (
 
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/config"
 )
+
+const ecrConfigYAML = `
+token: x
+registries:
+  - host: 111122223333.dkr.ecr.us-east-1.amazonaws.com
+    auth: { type: ecr, region: us-east-1, roleArn: "arn:aws:iam::111122223333:role/reader" }
+`
 
 func mustConfig(t *testing.T, raw string) *config.Config {
 	t.Helper()
@@ -63,13 +71,7 @@ registries:
 }
 
 func TestECRTokenCachingAndRefresh(t *testing.T) {
-	c := mustConfig(t, `
-token: x
-registries:
-  - host: 111122223333.dkr.ecr.us-east-1.amazonaws.com
-    auth: { type: ecr, region: us-east-1, roleArn: "arn:aws:iam::111122223333:role/reader" }
-`)
-	r := NewResolver(c)
+	r := NewResolver(mustConfig(t, ecrConfigYAML))
 
 	now := time.Now()
 	r.ecr.now = func() time.Time { return now }
@@ -108,4 +110,67 @@ func TestDecodeAuthToken(t *testing.T) {
 
 	_, _, err = decodeAuthToken("not-base64!!!")
 	assert.Error(t, err)
+}
+
+// A refresh that fails inside the grace window must NOT discard a cached token
+// that is still valid: we refresh early precisely so a transient STS/ECR blip
+// does not turn into a generator error (and a stalled ApplicationSet).
+func TestECRRefreshFailureKeepsValidToken(t *testing.T) {
+	r := NewResolver(mustConfig(t, ecrConfigYAML))
+
+	now := time.Now()
+	r.ecr.now = func() time.Time { return now }
+
+	var calls int
+	r.ecr.fetch = func(_ context.Context, _, _ string) (ecrToken, error) {
+		calls++
+		if calls == 1 {
+			return ecrToken{username: "AWS", password: "good", expiresAt: now.Add(12 * time.Hour)}, nil
+		}
+		return ecrToken{}, errors.New("sts unavailable")
+	}
+
+	host := "111122223333.dkr.ecr.us-east-1.amazonaws.com"
+	a, err := r.Authenticator(context.Background(), host)
+	require.NoError(t, err)
+	cfg, err := a.Authorization()
+	require.NoError(t, err)
+	assert.Equal(t, "good", cfg.Password)
+
+	// Move into the refresh margin: the token is near expiry but still valid.
+	now = now.Add(12*time.Hour - ecrRefreshMargin + time.Minute)
+
+	a, err = r.Authenticator(context.Background(), host)
+	require.NoError(t, err, "refresh failure must not fail the request while the token is valid")
+	cfg, err = a.Authorization()
+	require.NoError(t, err)
+	assert.Equal(t, "good", cfg.Password, "should keep serving the cached token")
+	assert.Equal(t, 2, calls, "a refresh should have been attempted")
+}
+
+// Once the cached token has actually expired, a failing refresh must surface as
+// an error (fail closed) rather than handing out a dead credential.
+func TestECRRefreshFailureAfterExpiryErrors(t *testing.T) {
+	r := NewResolver(mustConfig(t, ecrConfigYAML))
+
+	now := time.Now()
+	r.ecr.now = func() time.Time { return now }
+
+	var calls int
+	r.ecr.fetch = func(_ context.Context, _, _ string) (ecrToken, error) {
+		calls++
+		if calls == 1 {
+			return ecrToken{username: "AWS", password: "good", expiresAt: now.Add(1 * time.Hour)}, nil
+		}
+		return ecrToken{}, errors.New("sts unavailable")
+	}
+
+	host := "111122223333.dkr.ecr.us-east-1.amazonaws.com"
+	_, err := r.Authenticator(context.Background(), host)
+	require.NoError(t, err)
+
+	now = now.Add(2 * time.Hour) // past expiry
+	_, err = r.Authenticator(context.Background(), host)
+	require.Error(t, err, "an expired token with a failing refresh must fail closed")
+	assert.Contains(t, err.Error(), "obtaining ECR token")
 }
