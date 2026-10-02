@@ -51,7 +51,7 @@ cosign verify ghcr.io/nandotorres/argocd-oci-generator-plugin:<version> \
 
 ```sh
 cosign verify-blob \
-  --bundle checksums.txt.cosign.bundle \
+  --bundle checksums.txt.sigstore.json \
   --certificate-identity-regexp 'https://github.com/nandotorres/argocd-oci-generator-plugin' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // Mode selects segment-aware (path) matching versus flat (tag) matching.
@@ -101,6 +102,14 @@ func Anonymous(ordered []Capture) []string {
 func Compile(p string, mode Mode) (*Pattern, error) {
 	if p == "" {
 		return nil, fmt.Errorf("pattern must not be empty")
+	}
+	// Patterns are decoded rune-by-rune below, which would silently turn invalid
+	// bytes into U+FFFD. That corrupts the literal prefix used to narrow the
+	// registry catalog, so matching repositories would be dropped and the
+	// generator would return a successful empty result (which deletes
+	// Applications). Reject it instead, so the request fails closed.
+	if !utf8.ValidString(p) {
+		return nil, fmt.Errorf("pattern must be valid UTF-8")
 	}
 
 	var (
