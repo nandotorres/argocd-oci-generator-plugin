@@ -1,0 +1,90 @@
+name: pr-agent
+
+# AI review of pull requests using PR-Agent (Apache-2.0) with Gemini Flash.
+# Runs in-workflow and SHA-pinned, so it follows the same supply-chain rules as
+# the rest of CI (no external app with write access to the repo).
+#
+# Requires one repository secret: GEMINI_API_KEY (free tier, aistudio.google.com).
+# Comment /review, /improve, /ask ... on a PR to invoke it manually.
+#
+# Secret-exfiltration safety:
+#   - Uses `pull_request`, NOT `pull_request_target`. GitHub withholds secrets
+#     from fork PRs, so a fork that rewrites this workflow gets an empty key.
+#   - Fork PRs are skipped explicitly as well (belt and braces).
+#   - `issue_comment` DOES run with secrets (always from the default branch's
+#     copy of this file, so it cannot be modified by a PR), hence /commands are
+#     restricted to OWNER/MEMBER/COLLABORATOR to stop strangers burning quota.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: ai review
+    runs-on: ubuntu-latest
+    # Security gates (see the note at the top of this file):
+    #  - never run for PRs opened from a fork: `pull_request` withholds secrets
+    #    from forks, so the job would fail anyway, and this keeps the key well
+    #    away from untrusted branches;
+    #  - only honour /commands from trusted authors, since `issue_comment` runs
+    #    with secrets and anyone can comment on a public PR;
+    #  - ignore bots.
+    if: >-
+      github.event.sender.type != 'Bot' &&
+      (
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name == github.repository) ||
+        (github.event_name == 'issue_comment' &&
+         github.event.issue.pull_request &&
+         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      )
+    permissions:
+      contents: read
+      pull-requests: write # post review comments
+      issues: write # respond to /commands in PR comments
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      # Secrets aren't available in a job-level `if:`, so check here and skip
+      # cleanly (green, not red) when the key isn't configured yet.
+      - name: Check for GEMINI_API_KEY
+        id: guard
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "${GEMINI_API_KEY}" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GEMINI_API_KEY is not set - skipping AI review. Add the secret to enable it."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: PR-Agent
+        if: steps.guard.outputs.present == 'true'
+        uses: the-pr-agent/pr-agent@1d01f24f455bb879c1d9c557ad7de3d72dcc7975 # v0.46.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          config.model: "gemini/gemini-3.8-flash"
+          config.fallback_models: '["gemini/gemini-3.1-flash"]'
+          # Auto-review on PR events; leave the description to the author.
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "false"
+          github_action_config.auto_improve: "true"
+          # Keep output focused.
+          pr_reviewer.require_score_review: "false"
+          pr_reviewer.require_tests_review: "true"
+          pr_reviewer.require_security_review: "true"
+          pr_reviewer.persistent_comment: "true"
+          pr_code_suggestions.persistent_comment: "true"
