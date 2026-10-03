@@ -44,41 +44,24 @@ changes. A truncated or best-effort list is never returned as a 200.
 
 In scope:
 
-- List tags in an OCI repository and emit one parameter set per matching artifact.
-- Narrowing rules: tag regex, semver constraints, artifact/media-type filter,
-  annotation matching, include/exclude, sort, and limit (for example "latest N").
+- Resolve one `registry/repository:tag` and report whether it exists, emitting
+  one parameter set when it does.
 - Centralized credentials: basic auth (any registry-v2 with user/password) and
-  ECR (IRSA / instance role, optionally assuming a role).
-- Fail closed (§2.1). Structured logging and health endpoints.
+  ECR (IRSA / Pod Identity, optionally assuming a role).
+- Fail closed (§2.1). Structured logging, health endpoints, Prometheus metrics.
 
-Out of scope:
+Out of scope, deliberately:
 
-- Pushing or mutating artifacts; this is read-only.
-- Per-ApplicationSet credentials in the spec (see §5).
-- Non-OCI registries.
+- **Discovery.** The repository and tag are given, not searched for. Enumerating
+  repositories would need `GET /v2/_catalog`, a Docker Registry v2 extension
+  that is not part of the OCI distribution spec and that several major
+  registries do not serve.
+- Reading artifact *contents*. Argo CD's own OCI source does that; this only
+  decides whether an Application should exist.
+- Pushing or mutating artifacts. Read-only.
+- Per-ApplicationSet credentials (see §5).
 
 ## 4. Parameter model
-
-### 4.0 Existence check
-
-The simplest case: create an Application only if a specific tag exists. Given a
-reference `registry.example.com/my-org/my-app:stable`, the ApplicationSet is:
-
-```yaml
-generators:
-  - plugin:
-      configMapRef: { name: oci-generator }
-      requeueAfterSeconds: 120
-      input:
-        parameters:
-          registry: registry.example.com
-          repository: my-org/my-app
-          tag: stable           # pins one tag: existence check
-```
-
-Behavior: tag present → one Application; tag absent but registry reachable → zero
-Applications; registry or auth failure → generator error → no Applications
-deleted (§2.1).
 
 ### 4.1 Input
 
@@ -89,94 +72,53 @@ generators:
       requeueAfterSeconds: 300
       input:
         parameters:
-          repository: my-org/my-app          # required
-          registry: registry.example.com     # optional; else server default
-          tag: stable                        # pin one tag (0 or 1 result)
-          tagFilters:                        # all must match (AND)
-            - regex: "^v\\d+\\.\\d+\\.\\d+$"
-            - semver: ">= 1.2.0, < 2.0.0"
-          excludeTagFilters:                 # any match excludes the tag
-            - regex: ".*-rc.*"
-          artifactType: application/vnd.cncf.helm.config.v1+json  # optional
-          annotationSelectors:               # OCI annotations (AND)
-            - key: org.opencontainers.image.vendor
-              operator: In                   # In | NotIn | Exists | DoesNotExist
-              values: [my-org]
-          sort: semver                       # semver | alpha | created
-          order: desc                        # asc | desc
-          limit: 20                          # keep first N after sort
+          registry: registry.example.com   # optional; else the server default
+          repository: apps-oci/my-app      # required, literal
+          tag: production-current          # required
 ```
 
-Input is validated strictly; unknown or invalid fields are an error (§2.1).
+The ApplicationSet controller interpolates the surrounding generator's
+parameters into these fields before the plugin is called, so a matrix varies
+the repository or tag per cluster without the plugin doing any templating.
+
+Input is validated strictly; unknown or missing fields are a 400 (§2.1).
 
 ### 4.2 Output
 
-One parameter map per artifact, nested so both `goTemplate` modes work:
+One parameter map when the artifact exists, nested so both `goTemplate` modes
+work:
 
 ```yaml
 oci:
   registry:   registry.example.com
-  repository: my-org/my-app
-  tag:        v1.4.2
+  repository: apps-oci/my-app
+  tag:        production-current
   digest:     sha256:...
-  ref:        registry.example.com/my-org/my-app:v1.4.2
-  pinnedRef:  registry.example.com/my-org/my-app@sha256:...   # pin to this for GitOps
+  ref:        registry.example.com/apps-oci/my-app:production-current
+  pinnedRef:  registry.example.com/apps-oci/my-app@sha256:...
   mediaType:  application/vnd.oci.image.manifest.v1+json
-  artifactType: application/vnd.cncf.helm.config.v1+json
-  createdAt:  2024-05-01T12:00:00Z                     # from org.opencontainers.image.created
-  annotations:
-    org.opencontainers.image.revision: abc123
-  semver:                                              # present when the tag is semver
-    major: 1
-    minor: 4
-    patch: 2
-    prerelease: ""
 ```
 
-### 4.3 Wildcards and captures
+Everything here comes from a manifest `HEAD`, so the cost is one round trip and
+does not grow with the number of tags in the repository.
 
-The Git directory generator lets you write `some/repo/*/env/*` and consume the
-matched segments in the template. This keeps that ergonomics for OCI and adds
-named captures, across two axes:
+### 4.3 Existence, and what counts as an answer
 
-- repository namespace, enumerated from the registry catalog:
-  `repository: "apps/{team}/**/{env}"`
-- tag: `tagPattern: "{name}-current"`
+| Registry says | Meaning | Result |
+|---|---|---|
+| manifest resolves | artifact is published | one parameter set |
+| tag absent, repository present | not published here | empty, no Application |
+| repository absent | anomaly, not an answer | error, nothing deleted |
+| 401/403/5xx/network | no answer obtained | error, nothing deleted |
 
-Glob syntax (not regex; `.` is literal):
+A `HEAD` carries no body, and registries disagree on whether an absent tag in
+an absent repository reports `MANIFEST_UNKNOWN` or `NAME_UNKNOWN`, so a miss is
+confirmed with a single tag-list probe that reads only the status code.
 
-| token    | meaning                                              | captured         |
-|----------|------------------------------------------------------|------------------|
-| `*`      | one path segment, or a run within a tag              | yes (positional) |
-| `**`     | zero or more path segments (repository only)         | yes (positional) |
-| `?`      | a single character                                   | no               |
-| `{name}` | one segment (repository) or a run (tag), named       | yes              |
-| other    | literal                                              | no               |
-
-Discovery:
-
-- A `repository` with no wildcard is queried directly.
-- A `repository` with wildcards lists the registry catalog (`GET /v2/_catalog`),
-  filters it by the literal prefix before the first wildcard, then matches the
-  compiled pattern. Catalog failures are an error (§2.1).
-- For each matched repository, tags are listed and matched against `tagPattern`,
-  `tags`, and `tagFilters`.
-
-Captures are added to the output:
-
-```yaml
-oci:
-  captures:                    # merged named captures (repository + tag)
-    team: payments
-    env: prod
-    name: web
-  wildcards: [payments/x, prod]   # positional captures, in pattern order
-  repositorySegments: [apps, payments, x, prod]
-```
-
-Template usage: `{{ .oci.captures.env }}`, `{{ index .oci.wildcards 0 }}`.
-Duplicate capture names across the repository and tag patterns are rejected at
-request time (§2.1).
+This mirrors Git: a missing *file* in a repository that exists is an empty
+result, while a missing *repository* is an error. Keeping the repository
+constant and varying the tag per environment therefore gives decommissioning
+the same semantics as deleting a file.
 
 ## 5. Security model
 
@@ -226,10 +168,11 @@ cmd/plugin          load config, wire dependencies, run the server
 internal/config     config load/validate + ${VAR} expansion
 internal/server     HTTP server: bearer auth, /api/v1/getparams.execute, health
 internal/auth       Authenticator interface + basic/ecr/anonymous providers
-internal/registry   go-containerregistry wrapper: catalog, tags, manifests
-internal/generator  apply input rules → registry queries → filter/sort/limit
+internal/registry   go-containerregistry wrapper: tag existence, manifest HEAD
+internal/generator  validate input → resolve the tag → parameters
 internal/oci        artifact value object + parameter mapping
-internal/pattern    glob-with-captures matcher
+internal/metrics    Prometheus collectors
+internal/pattern    glob matcher for the allowedRepositories policy
 ```
 
 Main dependencies:
@@ -238,7 +181,7 @@ Main dependencies:
   abstraction, and an in-memory registry for tests.
 - `github.com/aws/aws-sdk-go-v2`: AWS config, STS AssumeRole, and ECR
   `GetAuthorizationToken`.
-- `github.com/Masterminds/semver/v3`: semver parsing, constraints, and sorting.
+- `github.com/prometheus/client_golang`: metrics.
 - stdlib `log/slog` and `net/http`.
 
 ## 7. Error handling
@@ -249,18 +192,21 @@ Main dependencies:
 - Client errors (bad input, disallowed repository) are 400/403; upstream/registry
   failures are 502/504. Both prevent deletion; the distinction only helps
   debugging.
-- An empty-but-valid result (the repository genuinely has no matching tags) is a
-  200 with `[]`. This is the one case where deletion is intended. Set
-  `failOnEmpty` to turn an empty result into an error instead.
+- An empty-but-valid result (the repository exists, the tag does not) is a 200
+  with `[]`. This is the one case where deletion is intended, and it is how an
+  environment is decommissioned.
 
 ## 8. Testing
 
-- Unit: filters (regex/semver/annotation), sort/limit, parameter mapping, config
-  validation, auth provider selection.
-- Component: push fake artifacts into an in-memory registry and run the generator
-  end-to-end over HTTP; assert output and fail-closed behavior.
-- ECR: the AssumeRole/token wiring with mocked STS and ECR clients.
-- The HTTP request/response contract.
+- Unit: input validation, parameter mapping, allowlist policy, auth provider
+  selection.
+- Component: push artifacts into an in-memory registry and drive the generator
+  end-to-end over HTTP; assert the present/absent/error outcomes.
+- ECR: the AssumeRole/token wiring, including reuse of a still-valid token when
+  a refresh fails, with mocked STS and ECR clients.
+- Fuzzing on the glob matcher, which parses untrusted-ish policy input.
+- `make e2e`: kind + Argo CD + registry, including a deliberate registry outage
+  showing existing Applications survive.
 
 ## 9. Release
 

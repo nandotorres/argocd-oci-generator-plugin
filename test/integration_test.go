@@ -68,8 +68,8 @@ func TestFullStack(t *testing.T) {
 	body := `{
       "applicationSetName": "demo",
       "input": {"parameters": {
-        "repository": "apps-oci/**/{env}",
-        "tagPattern": "{something}-current"
+        "repository": "apps-oci/orders-api/orders-api/dev",
+        "tag": "dev-current"
       }}
     }`
 	req, err := http.NewRequest(http.MethodPost, pluginSrv.URL+"/api/v1/getparams.execute", bytes.NewBufferString(body))
@@ -87,24 +87,49 @@ func TestFullStack(t *testing.T) {
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
 
-	// Only the two "dev" repositories with a "*-current" tag should match.
-	require.Len(t, out.Output.Parameters, 2)
+	// The pinned tag exists, so exactly one Application's worth of parameters.
+	require.Len(t, out.Output.Parameters, 1)
 
-	byRepo := map[string]map[string]any{}
-	for _, p := range out.Output.Parameters {
-		o := p["oci"].(map[string]any)
-		byRepo[o["repository"].(string)] = o
+	o := out.Output.Parameters[0]["oci"].(map[string]any)
+	assert.Equal(t, "apps-oci/orders-api/orders-api/dev", o["repository"])
+	assert.Equal(t, "dev-current", o["tag"])
+	assert.Contains(t, o["pinnedRef"], "@sha256:")
+}
+
+// An absent tag in a repository that exists is a definitive "nothing here":
+// 200 with no parameters, so the ApplicationSet creates no Application.
+func TestFullStackAbsentTagIsEmpty(t *testing.T) {
+	reg := httptest.NewServer(ggcrregistry.New())
+	t.Cleanup(reg.Close)
+	host := mustHost(t, reg.URL)
+	push(t, host, "apps-oci/orders-api/orders-api/dev", "dev-current", nil)
+
+	cfg := &config.Config{
+		Token:                 "s3cret",
+		DefaultRegistry:       host,
+		RequestTimeoutSeconds: 10,
+		TLS:                   config.TLS{PlainHTTP: true},
+		Registries:            []config.Registry{{Host: host, Auth: config.Auth{Type: config.AuthAnonymous}}},
 	}
+	regClient := registry.New(auth.NewResolver(cfg), registry.Options{PlainHTTP: true})
+	srv := httptest.NewServer(server.New(cfg, generator.New(regClient, nil), nil).Handler())
+	t.Cleanup(srv.Close)
 
-	orders := byRepo["apps-oci/orders-api/orders-api/dev"]
-	require.NotNil(t, orders)
-	assert.Equal(t, "dev-current", orders["tag"])
-	assert.Contains(t, orders["pinnedRef"], "@sha256:")
-	caps := orders["captures"].(map[string]any)
-	assert.Equal(t, "dev", caps["env"])
-	assert.Equal(t, "dev", caps["something"], "tag 'dev-current' -> {something}='dev'")
-	// The '**' wildcard captured the middle namespace segments.
-	assert.Equal(t, []any{"orders-api/orders-api"}, orders["wildcards"])
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/getparams.execute",
+		bytes.NewBufferString(`{"input":{"parameters":{"repository":"apps-oci/orders-api/orders-api/dev","tag":"not-published"}}}`))
+	req.Header.Set("Authorization", "Bearer s3cret")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var out struct {
+		Output struct {
+			Parameters []map[string]any `json:"parameters"`
+		} `json:"output"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	assert.Empty(t, out.Output.Parameters)
 }
 
 func TestFullStackRegistryDownFailsClosed(t *testing.T) {
@@ -123,7 +148,7 @@ func TestFullStackRegistryDownFailsClosed(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/getparams.execute",
-		bytes.NewBufferString(`{"input":{"parameters":{"repository":"apps-oci/x"}}}`))
+		bytes.NewBufferString(`{"input":{"parameters":{"repository":"apps-oci/x","tag":"v1"}}}`))
 	req.Header.Set("Authorization", "Bearer s3cret")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)

@@ -1,11 +1,11 @@
-# Discover OCI artifacts in ECR and create one Application per matching tag.
+# Create an Application only if the artifact for this environment exists in ECR.
 #
 # The plugin authenticates to ECR via the server config (IRSA / Pod Identity /
 # assumed role); the ApplicationSet carries NO credentials.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
-  name: ecr-apps
+  name: ecr-app
   namespace: argocd
 spec:
   goTemplate: true
@@ -18,29 +18,23 @@ spec:
         input:
           parameters:
             registry: "111122223333.dkr.ecr.us-east-1.amazonaws.com"
-            # Discover every app under apps-oci/<app> that has a released semver tag.
-            repository: "apps-oci/{app}"
-            tagPattern: "v{version}"
-            sort: semver
-            order: desc
-            limit: 1 # newest release per repo
+            repository: "apps-oci/my-app"
+            tag: "production-current"
   template:
     metadata:
-      name: "{{ .oci.captures.app }}"
-      labels:
-        app.kubernetes.io/name: "{{ .oci.captures.app }}"
+      name: "my-app-production"
+      annotations:
+        # The resolved digest, for auditing what a mutable tag pointed at.
+        oci.digest: "{{ .oci.digest }}"
     spec:
       project: default
       source:
-        repoURL: "{{ .oci.registry }}"
-        chart: "{{ .oci.repository }}"
-        # Helm OCI uses the chart version (the tag) as targetRevision.
-        # The generator still resolved the immutable digest as {{ .oci.digest }},
-        # which you can surface in a label/annotation for traceability.
+        repoURL: "oci://{{ .oci.registry }}/{{ .oci.repository }}"
         targetRevision: "{{ .oci.tag }}"
+        path: generated
       destination:
         server: https://kubernetes.default.svc
-        namespace: "{{ .oci.captures.app }}"
+        namespace: my-app
       syncPolicy:
         automated:
           prune: true

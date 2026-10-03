@@ -1,18 +1,20 @@
 # argocd-oci-generator-plugin
 
 Argo CD [ApplicationSet plugin](https://argo-cd.readthedocs.io/en/latest/operator-manual/applicationset/Generators-Plugin/)
-that lists an OCI registry and returns one parameter map per matching artifact.
+that creates an Application only if an OCI artifact exists.
 
-Common cases:
+Argo CD can deploy from an OCI registry, but it cannot ask whether an artifact
+is there. So an ApplicationSet that fans out over clusters fails as a whole the
+moment one environment has not been published to. This answers that one
+question:
 
-- create an Application only if a tag exists (`my-app:stable`)
-- create one Application per repo/tag that matches a glob (`apps/**/{env}`)
+> does `registry/repository:tag` exist?
 
-Same input also covers semver/regex filters, annotation selectors, artifact
-type, sort, and limit. Full list under [Parameters](#parameters).
+Artifact present, one parameter set. Absent, none, so no Application. Registry
+or credentials broken, an error, so Argo CD changes nothing.
 
 Credentials live on the plugin server. The ApplicationSet only names a
-`registry` and `repository`. Both are checked against server config.
+`registry`, `repository` and `tag`, all checked against the server config.
 
 Internals: [DESIGN.md](DESIGN.md).
 
@@ -36,12 +38,13 @@ bearer token. The plugin talks to the registry and returns matches.
 
 | plugin response | what Argo CD does |
 |---|---|
-| 200 with matches | create / update Applications |
+| 200 with one parameter set | create / update the Application |
 | 200 with `[]` | delete the Applications this set owns |
 | anything else (4xx/5xx) | error, **do not touch existing apps** |
 
-A registry outage is an error, not an empty list. Set `failOnEmpty: true` if
-you also want “no matching tags” to be an error instead of a prune.
+A registry outage is an error, not an empty list. That distinction is the whole
+point: an empty list is an instruction to prune, so a generator that cannot
+reach its registry must fail rather than report "nothing here".
 
 ## Install
 
@@ -177,11 +180,8 @@ Deployment restarts.
 
 ```yaml
 registry: "111122223333.dkr.ecr.us-east-1.amazonaws.com"
-repository: "apps-oci/{app}"
-tagPattern: "v{version}"
-sort: semver
-order: desc
-limit: 1
+repository: "apps-oci/my-app"
+tag: "production-current"
 ```
 
 See `deploy/examples/ecr/applicationset-ecr.yaml`.
@@ -208,114 +208,70 @@ show up on the ApplicationSet (condition `ErrorOccurred`, reason
 
 ## Parameters
 
-Two modes, and a query is one or the other:
-
-- **pin** — set `tag`. Asks whether one artifact exists and yields 0 or 1
-  result. This is the common case; combining it with the discovery fields is
-  rejected rather than silently ignored.
-- **discovery** — set `tagPattern` and/or `tagFilters`, optionally with `sort`,
-  `order` and `limit`. Yields one result per matching tag, so make sure the
-  Application name in your template varies per tag.
-
 Input (`plugin.input.parameters`):
 
 | key | type | |
 |---|---|---|
-| `repository` | string | required. Path or glob. |
-| `registry` | string | host. Defaults to server `defaultRegistry`. |
-| `tag` | string | pin one exact tag: 0 or 1 result (existence check). |
-| `tagPattern` | string | tag glob, with captures. |
-| `tagFilters` | []filter | `{regex}` or `{semver}`; all must match. |
-| `excludeTagFilters` | []filter | any match drops the tag. |
-| `artifactType` | string | OCI artifact type / config media type. |
-| `annotationSelectors` | []selector | `In` / `NotIn` / `Exists` / `DoesNotExist`. |
-| `sort` | string | `semver` \| `alpha` \| `created`. |
-| `order` | string | `asc` \| `desc`. |
-| `limit` | int | first N after sort. |
-| `failOnEmpty` | bool | empty match is an error (no prune). |
+| `repository` | string | required. Literal repository path. |
+| `tag` | string | required. The tag to resolve. |
+| `registry` | string | host. Defaults to the server's `defaultRegistry`. |
 
-Output, one map per artifact:
+The ApplicationSet controller interpolates the surrounding generator's
+parameters into these before the plugin sees them, so a matrix can vary the
+repository or the tag per cluster:
+
+```yaml
+repository: "apps-oci/web-app"
+tag: "{{ .name }}-current"
+```
+
+Output, one map when the artifact exists and none when it does not:
 
 ```yaml
 oci:
-  registry, repository, tag, digest
-  ref            # registry/repository:tag
-  pinnedRef      # registry/repository@sha256:...
-  mediaType, artifactType, createdAt
-  annotations: { ... }
-  semver: { major, minor, patch, prerelease, metadata }   # if the tag is semver
-  captures:  { <name>: <value> }
-  wildcards: [ ... ]                 # positional * / ** , in order
-  repositorySegments: [ ... ]
+  registry:   registry.example.com
+  repository: apps-oci/web-app
+  tag:        production-current
+  digest:     sha256:...
+  ref:        registry.example.com/apps-oci/web-app:production-current
+  pinnedRef:  registry.example.com/apps-oci/web-app@sha256:...
+  mediaType:  application/vnd.oci.image.manifest.v1+json
 ```
 
-With `goTemplate: false`, Argo CD flattens these (`oci.tag`, `oci.captures.env`).
-Prefer `pinnedRef` / `digest` in templates if you want immutability.
+With `goTemplate: false`, Argo CD flattens these (`oci.tag`, `oci.digest`).
+`digest` is worth recording on the Application: it captures what a mutable tag
+actually pointed at.
 
-## Globs
+## Repository allowlist
 
-Not regex. `.` is literal. Use `tagFilters.regex` when you need a real regexp.
+`allowedRepositories` in the server config is a glob (not a regex; `.` is
+literal), matched against the repository an ApplicationSet asks for:
 
-| token | matches | captured |
-|---|---|---|
-| `*` | one path segment, or a run in a tag | yes (positional) |
-| `**` | zero or more path segments (repos only) | yes (positional) |
-| `?` | one character | no |
-| `{name}` | one segment (repo) or a run (tag) | yes (`oci.captures.name`) |
+| token | matches |
+|---|---|
+| `*` | one path segment |
+| `**` | zero or more path segments |
+| `?` | one character |
 
-`repository: "apps/**/{env}"` + `tagPattern: "{app}-current"` matches
-`apps/team/web/prod` + `web-current`, and gives `{{ .oci.captures.env }}`,
-`{{ .oci.captures.app }}`, `{{ index .oci.wildcards 0 }}`.
-
-A literal `repository` is queried directly. A wildcard has to enumerate
-repositories first, which needs registry catalog support - see
-[Operating notes](#operating-notes).
+`apps-oci/**` permits anything under `apps-oci/`. An empty allowlist permits
+every repository the credential can see, so set one.
 
 ## Operating notes
 
-What decides whether a given input shape works against a given registry, how it
-behaves at the edges, and what it costs to run.
+### A missing tag is "nothing here"; a missing repository is an error
 
-### Wildcards in `repository` need catalog support
+If the repository exists and the tag does not, the result is empty: no
+Application is created, and an existing one is pruned. That is how an
+environment is decommissioned, and it mirrors removing a file from a Git
+repository.
 
-Enumerating repositories uses `GET /v2/_catalog`. That endpoint is **not part of
-the OCI distribution spec** - it is a Docker Registry v2 extension, and
-registries are free not to implement it. Where it is missing, wildcard
-`repository` patterns cannot work; the generator errors (so nothing is deleted):
+If the *repository* does not exist, that is an anomaly rather than an answer,
+so it fails closed and nothing is deleted. The practical consequence is to keep
+the repository constant and put the per-environment dimension in the tag
+(`web-app:production-current`), not in the repository path
+(`web-app/production:current`).
 
-```
-listing repositories in <registry>: catalog <registry>: EOF
-```
-
-Verified here: **Artifactory** answers `/v2/_catalog` with `200` and an empty
-body. **ECR**, **GHCR** and **Docker Hub** are also commonly reported not to
-serve it, exposing their own repository-listing APIs instead; `registry:2`,
-Harbor and zot do. Check before relying on wildcards:
-
-```bash
-curl -u "$REGISTRY_USER:$REGISTRY_PASS" 'https://YOUR_REGISTRY/v2/_catalog?n=5'
-```
-
-Everything else needs only `/v2/<name>/tags/list`, which the OCI spec does
-cover: a literal `repository`, `tags`, `tagPattern`, `tagFilters`,
-`excludeTagFilters`, `sort`, `limit`, `artifactType`, `annotationSelectors`.
-
-### A missing repository means "no artifacts", not an error
-
-If the repository itself does not exist (`404 NAME_UNKNOWN`) the result is
-`200 []`, so no Application is created. It is the same answer as an existing
-repository with no matching tags, and it stops a not-yet-published service from
-failing the whole generation - in a matrix that would take every other
-combination down with it. Use `failOnEmpty: true` if an empty result should be
-an error. Auth failures, 5xx and network errors still fail closed.
-
-### Metadata is only fetched when something needs it
-
-Resolving a tag uses a cheap `HEAD`, which gives the digest and media type but
-**no `annotations`, `artifactType` or `createdAt`**. Those appear only when the
-request already requires the manifest: `artifactType`, `annotationSelectors`, or
-`sort: created`. Include one of those to use `{{ .oci.annotations.* }}` in a
-template.
+Auth failures, 5xx and network errors always fail closed.
 
 ### Sizing and performance
 
@@ -324,31 +280,28 @@ to the ApplicationSet controller's. The work is **I/O bound**: nearly all wall
 time is spent waiting on the registry, and memory tracks artifacts in flight,
 not the number of ApplicationSets.
 
-Measured against a real Artifactory (single replica, 68-tag repository):
+Measured against a real Artifactory, single replica:
 
 | Workload | Memory (RSS) | Time |
 |---|---|---|
 | idle | 12 MB | - |
-| one existence check (`HEAD`) | 17 MB | ~250 ms |
-| existence check, repository absent | 17 MB | ~125 ms |
-| 68 tags, manifest `GET` each (`sort: created`) | 22 MB | ~12 s |
-| 5 of those concurrently | 24 MB | ~14 s |
-| 200 existence checks, 20 in parallel | 25 MB | ~3.8 s (~53/s) |
+| tag exists | 17 MB | ~250 ms |
+| tag absent (repository exists) | 17 MB | ~250 ms |
+| repository absent (error) | 17 MB | ~250 ms |
+| 200 checks, 20 in parallel | 25 MB | ~3.8 s (~53/s) |
 
-CPU stayed under ~5% of one core. The shipped limits (`500m` / `256Mi`) have
-roughly 10x headroom for existence checks; keep them unless you resolve
-thousands of tags per request. An OOM is fail-closed but hard to diagnose.
+CPU stayed under ~5% of one core, so the shipped limits (`500m` / `256Mi`) have
+roughly 10x headroom. An OOM is fail-closed but hard to diagnose, so leave the
+memory limit generous.
 
-**The constraint is time, not resources.** Each manifest costs a round trip
-(~180 ms above) and tags are resolved sequentially, so a request resolving 300
-manifests can exceed a 60 s timeout. Both `requestTimeoutSeconds` (server) and
-`requestTimeout` (Argo CD plugin ConfigMap) must exceed your slowest query.
+Cost does not grow with the size of the repository: a pinned tag is resolved
+with a manifest `HEAD` rather than by listing tags, so a repository with ten
+thousand releases costs the same as one with ten. Both `requestTimeoutSeconds`
+(server) and `requestTimeout` (Argo CD plugin ConfigMap) still need to exceed
+your slowest query.
 
-To keep requests cheap: prefer existence checks and `tagPattern` over anything
-that forces a manifest fetch; narrow with `tags`/`tagFilters` before `limit`
-(`limit` is applied after surviving tags are resolved); and raise
-`requeueAfterSeconds` rather than adding replicas, which help availability, not
-throughput.
+Raise `requeueAfterSeconds` rather than adding replicas: the registry is the
+bottleneck, so replicas help availability, not throughput.
 
 #### Worked example: many ApplicationSets, few clusters
 

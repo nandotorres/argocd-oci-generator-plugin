@@ -5,13 +5,11 @@ package registry
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -76,54 +74,6 @@ func (c *Client) remoteOpts(ctx context.Context, host string) ([]remote.Option, 
 		remote.WithAuth(authr),
 		remote.WithTransport(c.transport),
 	}, nil
-}
-
-// ListRepositories returns the registry catalog, narrowed to those sharing the
-// literal prefix.
-func (c *Client) ListRepositories(ctx context.Context, host, literalPrefix string) ([]string, error) {
-	reg, err := name.NewRegistry(host, c.nameOpts()...)
-	if err != nil {
-		return nil, fmt.Errorf("invalid registry %q: %w", host, err)
-	}
-	opts, err := c.remoteOpts(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-	start := time.Now()
-	repos, err := remote.Catalog(ctx, reg, opts...)
-	c.observe("catalog", start, err)
-	if err != nil {
-		return nil, fmt.Errorf("catalog %s: %w", host, err)
-	}
-	if literalPrefix == "" {
-		return repos, nil
-	}
-	var out []string
-	for _, r := range repos {
-		if strings.HasPrefix(r, literalPrefix) {
-			out = append(out, r)
-		}
-	}
-	return out, nil
-}
-
-// ListTags lists the tags of a repository.
-func (c *Client) ListTags(ctx context.Context, host, repository string) ([]string, error) {
-	repo, err := name.NewRepository(host+"/"+repository, c.nameOpts()...)
-	if err != nil {
-		return nil, fmt.Errorf("invalid repository %q: %w", repository, err)
-	}
-	opts, err := c.remoteOpts(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-	start := time.Now()
-	tags, err := remote.List(repo, opts...)
-	c.observe("list_tags", start, err)
-	if err != nil {
-		return nil, fmt.Errorf("list tags %s/%s: %w", host, repository, err)
-	}
-	return tags, nil
 }
 
 // TagExists reports whether a single tag resolves, using a manifest HEAD rather
@@ -231,32 +181,6 @@ func (c *Client) Head(ctx context.Context, host, repository, tag string) (*oci.A
 	}, nil
 }
 
-// Get resolves a tag to a fully-populated artifact via a manifest GET.
-func (c *Client) Get(ctx context.Context, host, repository, tag string) (*oci.Artifact, error) {
-	ref, opts, err := c.reference(ctx, host, repository, tag)
-	if err != nil {
-		return nil, err
-	}
-	start := time.Now()
-	desc, err := remote.Get(ref, opts...)
-	c.observe("get", start, err)
-	if err != nil {
-		return nil, fmt.Errorf("get %s/%s:%s: %w", host, repository, tag, err)
-	}
-
-	art := &oci.Artifact{
-		Registry:   host,
-		Repository: repository,
-		Tag:        tag,
-		Digest:     desc.Digest.String(),
-		MediaType:  string(desc.MediaType),
-	}
-	if err := enrich(art, desc.Manifest); err != nil {
-		return nil, fmt.Errorf("parsing manifest for %s/%s:%s: %w", host, repository, tag, err)
-	}
-	return art, nil
-}
-
 func (c *Client) reference(ctx context.Context, host, repository, tag string) (name.Reference, []remote.Option, error) {
 	ref, err := name.NewTag(host+"/"+repository+":"+tag, c.nameOpts()...)
 	if err != nil {
@@ -267,53 +191,4 @@ func (c *Client) reference(ctx context.Context, host, repository, tag string) (n
 		return nil, nil, err
 	}
 	return ref, opts, nil
-}
-
-// manifestMeta captures the parts of a manifest we surface as parameters.
-type manifestMeta struct {
-	MediaType    string            `json:"mediaType"`
-	ArtifactType string            `json:"artifactType"`
-	Annotations  map[string]string `json:"annotations"`
-	Config       struct {
-		MediaType   string            `json:"mediaType"`
-		Annotations map[string]string `json:"annotations"`
-	} `json:"config"`
-}
-
-// enrich parses the manifest bytes and populates artifact metadata.
-//
-// A parse failure is returned rather than swallowed: artifactType and
-// annotations can be filtered on, so silently dropping them would let a
-// malformed manifest turn into a *successful* result with the artifact missing
-// (which deletes Applications). Fail closed instead (DESIGN.md §2.1).
-func enrich(art *oci.Artifact, raw []byte) error {
-	var m manifestMeta
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return err
-	}
-
-	// artifactType: OCI 1.1 field if present, else the config media type, which
-	// is the conventional artifact discriminator (e.g. Helm charts).
-	art.ArtifactType = m.ArtifactType
-	if art.ArtifactType == "" {
-		art.ArtifactType = m.Config.MediaType
-	}
-
-	annotations := map[string]string{}
-	for k, v := range m.Config.Annotations {
-		annotations[k] = v
-	}
-	for k, v := range m.Annotations { // manifest annotations win
-		annotations[k] = v
-	}
-	if len(annotations) > 0 {
-		art.Annotations = annotations
-	}
-
-	if created := annotations[oci.AnnotationCreated]; created != "" {
-		if t, err := time.Parse(time.RFC3339, created); err == nil {
-			art.CreatedAt = &t
-		}
-	}
-	return nil
 }

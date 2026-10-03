@@ -28,9 +28,9 @@ spec:
     spec:
       project: default
       source:
-        repoURL: "{{ .oci.registry }}/{{ .oci.repository }}"
+        repoURL: "oci://{{ .oci.registry }}/{{ .oci.repository }}"
         targetRevision: "{{ .oci.tag }}"
-        chart: "" # set if this is a Helm OCI chart
+        path: generated
       destination:
         server: https://kubernetes.default.svc
         namespace: orders-api

@@ -1,5 +1,5 @@
-// Package pattern implements the glob-with-captures matching used to select OCI
-// repositories (across the registry catalog) and tags.
+// Package pattern implements the glob matching used by the server-side
+// allowedRepositories policy.
 //
 // It intentionally mirrors the ergonomics of the ArgoCD Git directory generator
 // (which uses path.Match globs) and extends them with:
@@ -16,18 +16,6 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
-)
-
-// Mode selects segment-aware (path) matching versus flat (tag) matching.
-type Mode int
-
-const (
-	// ModePath treats "/" as a segment separator: "*" matches a single segment
-	// and "**" matches zero or more segments (globstar).
-	ModePath Mode = iota
-	// ModeTag treats the whole input as a single token with no separators: "*"
-	// matches any run of characters and "**" is not special.
-	ModeTag
 )
 
 // Capture is a single matched wildcard value. Name is empty for anonymous
@@ -98,16 +86,14 @@ func Anonymous(ordered []Capture) []string {
 	return out
 }
 
-// Compile compiles a glob pattern in the given mode.
-func Compile(p string, mode Mode) (*Pattern, error) {
+// Compile compiles a glob pattern.
+func Compile(p string) (*Pattern, error) {
 	if p == "" {
 		return nil, fmt.Errorf("pattern must not be empty")
 	}
-	// Patterns are decoded rune-by-rune below, which would silently turn invalid
-	// bytes into U+FFFD. That corrupts the literal prefix used to narrow the
-	// registry catalog, so matching repositories would be dropped and the
-	// generator would return a successful empty result (which deletes
-	// Applications). Reject it instead, so the request fails closed.
+	// Patterns are decoded rune-by-rune below, which silently turns invalid
+	// bytes into U+FFFD: the compiled pattern and its literal prefix would no
+	// longer correspond to the input. Reject rather than mangle.
 	if !utf8.ValidString(p) {
 		return nil, fmt.Errorf("pattern must be valid UTF-8")
 	}
@@ -152,11 +138,11 @@ func Compile(p string, mode Mode) (*Pattern, error) {
 				return nil, fmt.Errorf("duplicate capture name %q in pattern %q", name, p)
 			}
 			seenName[name] = true
-			// Named capture: one segment (path) or a minimal run (tag).
+			// Named capture: one path segment.
 			openWildcard(name, "([^/]+?)")
 			i = end
 		case r == '*':
-			if mode == ModePath && i+1 < len(runes) && runes[i+1] == '*' {
+			if i+1 < len(runes) && runes[i+1] == '*' {
 				// Globstar: zero or more path segments. Absorb a neighbouring
 				// separator so "a/**/b" also matches "a/b".
 				i++ // consume second '*'
@@ -175,17 +161,11 @@ func Compile(p string, mode Mode) (*Pattern, error) {
 				default:
 					openWildcard("", "(.*)")
 				}
-			} else if mode == ModePath {
-				openWildcard("", "([^/]*)")
 			} else {
-				openWildcard("", "(.*)")
+				openWildcard("", "([^/]*)")
 			}
 		case r == '?':
-			if mode == ModePath {
-				openWildcard("", "([^/])")
-			} else {
-				openWildcard("", "(.)")
-			}
+			openWildcard("", "([^/])")
 		default:
 			addLiteral(r)
 		}

@@ -71,7 +71,7 @@ func TestHealth(t *testing.T) {
 func TestUnauthorized(t *testing.T) {
 	srv := newTestServer(t, &stubGen{})
 	for _, tok := range []string{"", "wrong"} {
-		resp := do(t, srv, tok, `{"input":{"parameters":{"repository":"apps-oci/x"}}}`)
+		resp := do(t, srv, tok, `{"input":{"parameters":{"tag":"v1","repository":"apps-oci/x"}}}`)
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 		resp.Body.Close()
 	}
@@ -104,7 +104,7 @@ func TestHappyPath(t *testing.T) {
 
 func TestGeneratorErrorIsBadGateway(t *testing.T) {
 	srv := newTestServer(t, &stubGen{err: errors.New("registry down")})
-	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"repository":"apps-oci/x"}}}`)
+	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"tag":"v1","repository":"apps-oci/x"}}}`)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
 
@@ -123,14 +123,14 @@ func TestInvalidInputIsBadRequest(t *testing.T) {
 
 func TestUnknownFieldIsBadRequest(t *testing.T) {
 	srv := newTestServer(t, &stubGen{})
-	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"repository":"apps-oci/x","bogus":true}}}`)
+	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"tag":"v1","repository":"apps-oci/x","bogus":true}}}`)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "typos must fail closed, not silently ignore")
 }
 
 func TestUnconfiguredRegistryIsForbidden(t *testing.T) {
 	srv := newTestServer(t, &stubGen{})
-	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"registry":"evil.example.com","repository":"apps-oci/x"}}}`)
+	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"registry":"evil.example.com","tag":"v1","repository":"apps-oci/x"}}}`)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }
@@ -142,7 +142,7 @@ func TestDisallowedRepositoryReturns403(t *testing.T) {
 		generator.ErrRepositoryNotAllowed, "other/thing")}
 	srv := newTestServer(t, gen)
 
-	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"repository":"other/thing"}}}`)
+	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"tag":"v1","repository":"other/thing"}}}`)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }
@@ -152,7 +152,7 @@ func TestUpstreamFailureReturns502(t *testing.T) {
 	gen := &stubGen{err: errors.New("registry unreachable")}
 	srv := newTestServer(t, gen)
 
-	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"repository":"apps-oci/a"}}}`)
+	resp := do(t, srv, "s3cret", `{"input":{"parameters":{"tag":"v1","repository":"apps-oci/a"}}}`)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
 }
@@ -176,8 +176,8 @@ func TestMetricsEndpointAndCounters(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	// One success and one auth failure, so both code paths are recorded.
-	do(t, srv, "s3cret", `{"input":{"parameters":{"repository":"a/b"}}}`).Body.Close()
-	do(t, srv, "wrong", `{"input":{"parameters":{"repository":"a/b"}}}`).Body.Close()
+	do(t, srv, "s3cret", `{"input":{"parameters":{"tag":"v1","repository":"a/b"}}}`).Body.Close()
+	do(t, srv, "wrong", `{"input":{"parameters":{"tag":"v1","repository":"a/b"}}}`).Body.Close()
 
 	resp, err := http.Get(srv.URL + "/metrics")
 	require.NoError(t, err)
