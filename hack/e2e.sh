@@ -36,6 +36,13 @@ step() { echo; echo "${c_blue}==> $*${c_off}"; }
 ok()   { echo "${c_green}  ✓ $*${c_off}"; }
 warn() { echo "${c_red}  ! $*${c_off}"; }
 
+# Use a kubeconfig of our own, so kind never touches ~/.kube/config and the
+# demo cannot repoint (or unset) the context you use for real clusters.
+export KUBECONFIG="${ROOT}/.e2e/kubeconfig"
+mkdir -p "$(dirname "${KUBECONFIG}")"
+touch "${KUBECONFIG}"
+chmod 600 "${KUBECONFIG}"
+
 if [[ "${1:-}" == "--clean" ]]; then
   step "Deleting kind cluster ${CLUSTER}"
   kind delete cluster --name "${CLUSTER}" || true
@@ -385,14 +392,19 @@ What you just saw:
     returns an empty set and the App would be pruned: a successful empty result,
     not an error.)
 
+This demo uses its own kubeconfig, so your usual context is untouched. To talk
+to the throwaway cluster:
+
+  export KUBECONFIG=${KUBECONFIG}
+
 Open the Argo CD UI (HTTP, no certificate warning):
-  kubectl --context kind-${CLUSTER} -n argocd port-forward svc/argocd-server 8080:80
+  kubectl -n argocd port-forward svc/argocd-server 8080:80
   # http://localhost:8080
   # user: admin
   # password: ${ARGOCD_ADMIN_PASSWORD}
 
 If that password is rejected, the generated one is still in the cluster:
-  kubectl --context kind-${CLUSTER} -n argocd get secret argocd-initial-admin-secret \\
+  kubectl -n argocd get secret argocd-initial-admin-secret \\
     -o jsonpath='{.data.password}' | base64 -d; echo
 
 Note: the demo registry uses ephemeral storage, so scaling it back up starts it
