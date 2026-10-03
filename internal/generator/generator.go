@@ -31,6 +31,10 @@ type RegistryClient interface {
 	// Head resolves a tag to a lightweight artifact (digest + media type) using
 	// a manifest HEAD.
 	Head(ctx context.Context, registry, repository, tag string) (*oci.Artifact, error)
+
+	// TagExists reports whether a single tag resolves, without listing the
+	// repository. A repository that does not exist is an error, not a false.
+	TagExists(ctx context.Context, registry, repository, tag string) (bool, error)
 	// Get resolves a tag to a fully-populated artifact (annotations, artifact
 	// type, created time) using a manifest GET.
 	Get(ctx context.Context, registry, repository, tag string) (*oci.Artifact, error)
@@ -123,15 +127,40 @@ func (g *Generator) resolveRepositories(ctx context.Context, q *Query) ([]string
 	return matched, captures, nil
 }
 
+// candidateTags returns the tags worth resolving for this repository.
+//
+// A pinned tag is already the entire candidate set, so we ask the registry
+// about that one tag instead of listing a repository whose tag count grows with
+// every release ever published. Everything else needs the full list, because
+// patterns, filters and ordering are defined over the whole tag space.
+func (g *Generator) candidateTags(ctx context.Context, q *Query, repo string) ([]string, error) {
+	if q.ExactTag == "" {
+		tags, err := g.client.ListTags(ctx, q.Registry, repo)
+		if err != nil {
+			return nil, fmt.Errorf("listing tags for %s/%s: %w", q.Registry, repo, err)
+		}
+		return tags, nil
+	}
+
+	exists, err := g.client.TagExists(ctx, q.Registry, repo, q.ExactTag)
+	if err != nil {
+		return nil, fmt.Errorf("checking %s/%s:%s: %w", q.Registry, repo, q.ExactTag, err)
+	}
+	if !exists {
+		return nil, nil
+	}
+	return []string{q.ExactTag}, nil
+}
+
 type repoMatch struct {
 	named     map[string]string
 	wildcards []string
 }
 
 func (g *Generator) artifactsForRepo(ctx context.Context, q *Query, repo string, rm repoMatch) ([]oci.Artifact, error) {
-	tags, err := g.client.ListTags(ctx, q.Registry, repo)
+	tags, err := g.candidateTags(ctx, q, repo)
 	if err != nil {
-		return nil, fmt.Errorf("listing tags for %s/%s: %w", q.Registry, repo, err)
+		return nil, err
 	}
 
 	var out []oci.Artifact

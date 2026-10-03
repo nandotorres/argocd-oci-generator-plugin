@@ -73,7 +73,7 @@ generators:
         parameters:
           registry: registry.example.com
           repository: my-org/my-app
-          tags: [stable]        # exact-match existence check
+          tag: stable           # pins one tag: existence check
 ```
 
 Behavior: tag present → one Application; tag absent but registry reachable → zero
@@ -91,7 +91,7 @@ generators:
         parameters:
           repository: my-org/my-app          # required
           registry: registry.example.com     # optional; else server default
-          tags: [stable, dev]                # optional exact-match (existence check)
+          tag: stable                        # pin one tag (0 or 1 result)
           tagFilters:                        # all must match (AND)
             - regex: "^v\\d+\\.\\d+\\.\\d+$"
             - semver: ">= 1.2.0, < 2.0.0"

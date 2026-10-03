@@ -85,7 +85,7 @@ func TestHappyPath(t *testing.T) {
 
 	resp := do(t, srv, "s3cret", `{
       "applicationSetName": "demo",
-      "input": {"parameters": {"repository": "apps-oci/orders-api/dev", "tags": ["dev-current"]}}
+      "input": {"parameters": {"repository": "apps-oci/orders-api/dev", "tag": "dev-current"}}
     }`)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)

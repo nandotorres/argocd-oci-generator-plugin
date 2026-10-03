@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -117,40 +119,95 @@ func (c *Client) ListTags(ctx context.Context, host, repository string) ([]strin
 	}
 	start := time.Now()
 	tags, err := remote.List(repo, opts...)
-	// An absent repository is a successful answer, not a failed call: counting
-	// it as an error would make "service not published yet" look like registry
-	// trouble on the dashboards.
-	if absent := isRepositoryAbsent(err); absent {
-		c.observe("list_tags", start, nil)
-	} else {
-		c.observe("list_tags", start, err)
-	}
+	c.observe("list_tags", start, err)
 	if err != nil {
-		// An absent repository is a definitive answer from the registry, not a
-		// failure to get one: it holds zero artifacts, exactly like a repository
-		// with no matching tags. Only a failure to obtain an answer (auth, 5xx,
-		// network) is an error.
-		if isRepositoryAbsent(err) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("list tags %s/%s: %w", host, repository, err)
 	}
 	return tags, nil
 }
 
-// isRepositoryAbsent reports whether err means "this repository does not exist":
-// registry-v2 NAME_UNKNOWN, or a bare 404 from registries that omit the code.
-func isRepositoryAbsent(err error) bool {
+// TagExists reports whether a single tag resolves, using a manifest HEAD rather
+// than listing the repository.
+//
+// A 404 here is ambiguous: a HEAD carries no body, and registries are
+// inconsistent about whether an absent tag in an absent repository reports
+// MANIFEST_UNKNOWN or NAME_UNKNOWN. So on a miss we confirm the repository
+// separately, which keeps "repository does not exist" an error rather than
+// silently reporting the tag as absent.
+func (c *Client) TagExists(ctx context.Context, host, repository, tag string) (bool, error) {
+	ref, opts, err := c.reference(ctx, host, repository, tag)
+	if err != nil {
+		return false, err
+	}
+
+	start := time.Now()
+	_, err = remote.Head(ref, opts...)
+	c.observe("head", start, err)
+	if err == nil {
+		return true, nil
+	}
+
 	var terr *transport.Error
-	if !errors.As(err, &terr) {
-		return false
+	if !errors.As(err, &terr) || terr.StatusCode != http.StatusNotFound {
+		return false, err // auth, 5xx, network: fail closed
 	}
-	for _, e := range terr.Errors {
-		if e.Code == transport.NameUnknownErrorCode {
-			return true
-		}
+
+	// The tag is absent; the repository may be too.
+	start = time.Now()
+	exists, err := c.repositoryExists(ctx, host, repository)
+	c.observe("list_tags", start, err)
+	if err != nil {
+		return false, err
 	}
-	return terr.StatusCode == http.StatusNotFound
+	if exists {
+		return false, nil // repository is there, the tag simply is not
+	}
+	return false, fmt.Errorf("list tags %s/%s: repository does not exist", host, repository)
+}
+
+// repositoryExists probes the tag-list endpoint and reads only the status code.
+//
+// remote.List cannot be used here: it pages through every tag in the
+// repository, so asking it a yes/no question costs one request per page.
+func (c *Client) repositoryExists(ctx context.Context, host, repository string) (bool, error) {
+	repo, err := name.NewRepository(host+"/"+repository, c.nameOpts()...)
+	if err != nil {
+		return false, fmt.Errorf("invalid repository %q: %w", repository, err)
+	}
+	authr, err := c.auth.Authenticator(ctx, host)
+	if err != nil {
+		return false, err
+	}
+	rt, err := transport.NewWithContext(ctx, repo.Registry, authr, c.transport, []string{repo.Scope("pull")})
+	if err != nil {
+		return false, fmt.Errorf("authenticating to %s: %w", host, err)
+	}
+
+	u := url.URL{
+		Scheme:   repo.Scheme(),
+		Host:     repo.RegistryStr(),
+		Path:     "/v2/" + repo.RepositoryStr() + "/tags/list",
+		RawQuery: "n=1",
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := (&http.Client{Transport: rt}).Do(req)
+	if err != nil {
+		return false, fmt.Errorf("probing %s/%s: %w", host, repository, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return false, nil
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return true, nil
+	default:
+		return false, fmt.Errorf("probing %s/%s: unexpected status %s", host, repository, resp.Status)
+	}
 }
 
 // Head resolves a tag to a lightweight artifact via a manifest HEAD.

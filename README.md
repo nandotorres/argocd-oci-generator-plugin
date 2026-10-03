@@ -104,7 +104,7 @@ spec:
           parameters:
             registry: harbor.example.com
             repository: apps-oci/orders-api/dev
-            tags: ["dev-current"]
+            tag: "dev-current"
   template:
     metadata:
       name: orders-api-dev
@@ -208,13 +208,22 @@ show up on the ApplicationSet (condition `ErrorOccurred`, reason
 
 ## Parameters
 
+Two modes, and a query is one or the other:
+
+- **pin** — set `tag`. Asks whether one artifact exists and yields 0 or 1
+  result. This is the common case; combining it with the discovery fields is
+  rejected rather than silently ignored.
+- **discovery** — set `tagPattern` and/or `tagFilters`, optionally with `sort`,
+  `order` and `limit`. Yields one result per matching tag, so make sure the
+  Application name in your template varies per tag.
+
 Input (`plugin.input.parameters`):
 
 | key | type | |
 |---|---|---|
 | `repository` | string | required. Path or glob. |
 | `registry` | string | host. Defaults to server `defaultRegistry`. |
-| `tags` | []string | exact tags (existence check). |
+| `tag` | string | pin one exact tag: 0 or 1 result (existence check). |
 | `tagPattern` | string | tag glob, with captures. |
 | `tagFilters` | []filter | `{regex}` or `{semver}`; all must match. |
 | `excludeTagFilters` | []filter | any match drops the tag. |

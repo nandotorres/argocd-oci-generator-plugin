@@ -44,7 +44,7 @@ func (q *Query) matchAnnotations(a *oci.Artifact) bool {
 func (q *Query) tagSelected(tag string) bool {
 	v := parseSemVer(tag)
 
-	if q.ExactTags != nil && !q.ExactTags[tag] {
+	if q.ExactTag != "" && q.ExactTag != tag {
 		return false
 	}
 	for _, f := range q.Includes {

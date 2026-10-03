@@ -3,6 +3,7 @@ package generator
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/Masterminds/semver/v3"
 
@@ -55,10 +56,13 @@ type AnnotationSelector struct {
 // Input is the raw, JSON-decoded shape of the ApplicationSet
 // plugin.input.parameters for this generator.
 type Input struct {
-	Registry            string               `json:"registry,omitempty"`
-	Repository          string               `json:"repository"`
-	TagPattern          string               `json:"tagPattern,omitempty"`
-	Tags                []string             `json:"tags,omitempty"`
+	Registry   string `json:"registry,omitempty"`
+	Repository string `json:"repository"`
+	TagPattern string `json:"tagPattern,omitempty"`
+	// Tag pins a single exact tag. This is the common case: the generator then
+	// answers "does this artifact exist" and yields at most one result, so an
+	// ApplicationSet cannot accidentally fan out over a repository's history.
+	Tag                 string               `json:"tag,omitempty"`
 	TagFilters          []TagFilterSpec      `json:"tagFilters,omitempty"`
 	ExcludeTagFilters   []TagFilterSpec      `json:"excludeTagFilters,omitempty"`
 	ArtifactType        string               `json:"artifactType,omitempty"`
@@ -95,7 +99,7 @@ type Query struct {
 	Registry     string
 	RepoPattern  *pattern.Pattern
 	TagPattern   *pattern.Pattern // nil when not set
-	ExactTags    map[string]bool  // nil when not set
+	ExactTag     string           // empty when not pinned
 	Includes     []compiledTagFilter
 	Excludes     []compiledTagFilter
 	ArtifactType string
@@ -188,15 +192,31 @@ func (in Input) Compile(defaultRegistry string) (*Query, error) {
 		q.TagPattern = tp
 	}
 
-	if len(in.Tags) > 0 {
-		q.ExactTags = make(map[string]bool, len(in.Tags))
-		for _, t := range in.Tags {
-			if t == "" {
-				return nil, fmt.Errorf("tags must not contain empty strings")
-			}
-			q.ExactTags[t] = true
+	// A pinned tag is a complete selection on its own. Combining it with
+	// discovery fields is always a mistake, and silently ignoring them would
+	// hide it, so reject the combination instead.
+	if in.Tag != "" {
+		var conflicts []string
+		if in.TagPattern != "" {
+			conflicts = append(conflicts, "tagPattern")
+		}
+		if len(in.TagFilters) > 0 {
+			conflicts = append(conflicts, "tagFilters")
+		}
+		if len(in.ExcludeTagFilters) > 0 {
+			conflicts = append(conflicts, "excludeTagFilters")
+		}
+		if in.Sort != "" {
+			conflicts = append(conflicts, "sort")
+		}
+		if in.Limit != 0 {
+			conflicts = append(conflicts, "limit")
+		}
+		if len(conflicts) > 0 {
+			return nil, fmt.Errorf("tag pins a single tag and cannot be combined with %s", strings.Join(conflicts, ", "))
 		}
 	}
+	q.ExactTag = in.Tag
 
 	if q.Includes, err = compileTagFilters(in.TagFilters); err != nil {
 		return nil, err

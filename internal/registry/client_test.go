@@ -128,26 +128,53 @@ func TestEnrichParsesAnnotations(t *testing.T) {
 	assert.Equal(t, "abc", art.Annotations["org.opencontainers.image.revision"])
 }
 
-// A repository that does not exist must read as "no tags", not as an error.
-// This is the "service not yet published for this environment" case: the
-// ApplicationSet should simply create no Application. Returning an error would
-// fail the whole generation - and in a matrix generator that takes every other
-// combination down with it.
-func TestListTagsMissingRepositoryIsEmpty(t *testing.T) {
+// A repository that does not exist is an anomaly, not an empty result: the
+// generator must fail closed rather than report zero artifacts, which would
+// prune Applications.
+func TestListTagsMissingRepositoryErrors(t *testing.T) {
 	host := startRegistry(t)
 	c := New(anonProvider{}, Options{PlainHTTP: true})
 
-	tags, err := c.ListTags(context.Background(), host, "apps-oci/never/published")
-	require.NoError(t, err, "a missing repository must not be an error")
-	assert.Empty(t, tags)
+	_, err := c.ListTags(context.Background(), host, "apps-oci/never/published")
+	require.Error(t, err)
 }
 
-// But a real failure (here: unreachable registry) must still propagate, so we
-// keep failing closed and Argo CD leaves existing Applications alone.
 func TestListTagsRealFailureStillErrors(t *testing.T) {
 	c := New(anonProvider{}, Options{PlainHTTP: true})
 	_, err := c.ListTags(context.Background(), "127.0.0.1:1", "apps-oci/x")
 	require.Error(t, err, "an unreachable registry must still be an error")
+}
+
+// TagExists answers the pinned-tag question without listing the repository.
+func TestTagExists(t *testing.T) {
+	host := startRegistry(t)
+	c := New(anonProvider{}, Options{PlainHTTP: true})
+	pushImage(t, host, "apps-oci/app/dev", "v1.0.0", nil)
+
+	t.Run("present", func(t *testing.T) {
+		ok, err := c.TagExists(context.Background(), host, "apps-oci/app/dev", "v1.0.0")
+		require.NoError(t, err)
+		assert.True(t, ok)
+	})
+
+	// An absent tag in a repository that exists is a definitive "no".
+	t.Run("absent tag, repository exists", func(t *testing.T) {
+		ok, err := c.TagExists(context.Background(), host, "apps-oci/app/dev", "v9.9.9")
+		require.NoError(t, err)
+		assert.False(t, ok)
+	})
+
+	// An absent repository is indistinguishable from an absent tag on a HEAD,
+	// so it must be confirmed separately and surface as an error.
+	t.Run("absent repository errors", func(t *testing.T) {
+		_, err := c.TagExists(context.Background(), host, "apps-oci/never/published", "v1.0.0")
+		require.Error(t, err)
+	})
+
+	t.Run("unreachable registry errors", func(t *testing.T) {
+		_, err := c.TagExists(context.Background(), "127.0.0.1:1", "apps-oci/x", "v1")
+		require.Error(t, err)
+	})
 }
 
 // rawManifest publishes a pre-built manifest verbatim. It is needed because

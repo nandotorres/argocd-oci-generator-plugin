@@ -21,7 +21,7 @@ spec:
           parameters:
             registry: registry.example.com
             repository: apps-oci/orders-api/orders-api/dev
-            tags: ["dev-current"] # exact-match existence check
+            tag: "dev-current" # pins one tag: 0 or 1 Application
   template:
     metadata:
       name: orders-api-dev

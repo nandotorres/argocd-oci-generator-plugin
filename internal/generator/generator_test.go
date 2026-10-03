@@ -3,6 +3,7 @@ package generator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -45,6 +46,26 @@ func (f *fakeClient) ListTags(_ context.Context, registry, repo string) ([]strin
 		return nil, e
 	}
 	return f.tags[registry+"/"+repo], nil
+}
+
+// TagExists mirrors the real client: a missing repository is an error, a
+// missing tag in an existing repository is simply false.
+func (f *fakeClient) TagExists(_ context.Context, registry, repo, tag string) (bool, error) {
+	f.calls["TagExists"]++
+	if err := f.err["TagExists"]; err != nil {
+		return false, err
+	}
+	key := registry + "/" + repo
+	tags, ok := f.tags[key]
+	if !ok {
+		return false, fmt.Errorf("list tags %s: repository absent", key)
+	}
+	for _, t := range tags {
+		if t == tag {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *fakeClient) Head(_ context.Context, registry, repo, tag string) (*oci.Artifact, error) {
@@ -98,7 +119,7 @@ func TestExistenceCheck(t *testing.T) {
 	q := mustCompile(t, Input{
 		Registry:   "registry.example.com",
 		Repository: "apps-oci/orders-api/orders-api/dev",
-		Tags:       []string{"dev-current"},
+		Tag:        "dev-current",
 	})
 	params, err := g.Generate(context.Background(), q)
 	require.NoError(t, err)
@@ -119,7 +140,7 @@ func TestExistenceCheckAbsentTagIsEmpty(t *testing.T) {
 	q := mustCompile(t, Input{
 		Registry:   "registry.example.com",
 		Repository: "apps-oci/orders-api/orders-api/dev",
-		Tags:       []string{"dev-current"},
+		Tag:        "dev-current",
 	})
 	params, err := g.Generate(context.Background(), q)
 	require.NoError(t, err)
@@ -131,7 +152,7 @@ func TestFailOnEmpty(t *testing.T) {
 	f := newFakeClient()
 	f.tags["r/repo"] = []string{"v1"}
 	g := New(f, nil)
-	q := mustCompile(t, Input{Registry: "r", Repository: "repo", Tags: []string{"nope"}, FailOnEmpty: true})
+	q := mustCompile(t, Input{Registry: "r", Repository: "repo", Tag: "nope", FailOnEmpty: true})
 	_, err := g.Generate(context.Background(), q)
 	assert.Error(t, err)
 }
@@ -261,4 +282,60 @@ func TestAnnotationSelectorAndArtifactType(t *testing.T) {
 	assert.Equal(t, "2024-05-01T12:00:00Z", o["createdAt"])
 	assert.Positive(t, f.calls["Get"], "manifest GET used when filters need it")
 	assert.Zero(t, f.calls["Head"])
+}
+
+// A pinned tag must not list the repository: that cost grows with every
+// release ever published, while the question is about exactly one tag.
+func TestPinnedTagDoesNotListTags(t *testing.T) {
+	f := newFakeClient()
+	f.tags["r/apps/app"] = []string{"staging-current", "v1", "v2"}
+	f.addArtifact(oci.Artifact{Registry: "r", Repository: "apps/app", Tag: "staging-current", Digest: "sha256:abc"})
+
+	got, err := New(f, nil).Generate(context.Background(),
+		mustCompile(t, Input{Registry: "r", Repository: "apps/app", Tag: "staging-current"}))
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, 0, f.calls["ListTags"], "a pinned tag must not list the repository")
+	assert.Equal(t, 1, f.calls["TagExists"])
+}
+
+// A pinned tag that is absent yields no artifacts, which is how an
+// ApplicationSet expresses "this environment is not published here".
+func TestPinnedTagAbsentIsEmpty(t *testing.T) {
+	f := newFakeClient()
+	f.tags["r/apps/app"] = []string{"v1"}
+
+	got, err := New(f, nil).Generate(context.Background(),
+		mustCompile(t, Input{Registry: "r", Repository: "apps/app", Tag: "staging-current"}))
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+// Discovery queries still need the full tag list.
+func TestDiscoveryStillListsTags(t *testing.T) {
+	f := newFakeClient()
+	f.tags["r/apps/app"] = []string{"v1.0.0", "v2.0.0"}
+	f.addArtifact(oci.Artifact{Registry: "r", Repository: "apps/app", Tag: "v1.0.0", Digest: "sha256:a"})
+	f.addArtifact(oci.Artifact{Registry: "r", Repository: "apps/app", Tag: "v2.0.0", Digest: "sha256:b"})
+
+	_, err := New(f, nil).Generate(context.Background(),
+		mustCompile(t, Input{Registry: "r", Repository: "apps/app", TagPattern: "v{version}"}))
+	require.NoError(t, err)
+	assert.Equal(t, 1, f.calls["ListTags"])
+	assert.Equal(t, 0, f.calls["TagExists"])
+}
+
+func TestTagCannotBeCombinedWithDiscovery(t *testing.T) {
+	for name, in := range map[string]Input{
+		"tagPattern": {Registry: "r", Repository: "a/b", Tag: "x", TagPattern: "v{v}"},
+		"sort":       {Registry: "r", Repository: "a/b", Tag: "x", Sort: SortSemVer},
+		"limit":      {Registry: "r", Repository: "a/b", Tag: "x", Limit: 5},
+		"tagFilters": {Registry: "r", Repository: "a/b", Tag: "x", TagFilters: []TagFilterSpec{{Regex: ".*"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := in.Compile("")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "cannot be combined with")
+		})
+	}
 }

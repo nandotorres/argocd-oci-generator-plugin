@@ -36,7 +36,7 @@ spec:
                 parameters:
                   registry: registry.example.com
                   repository: "apps-oci/web-app/{{ .name }}"
-                  tags: ["stable"]
+                  tag: "stable"
   template:
     metadata:
       name: "web-app-{{ .name }}"
