@@ -21,16 +21,16 @@ spec:
           parameters:
             registry: registry.example.com
             repository: apps-oci/orders-api/orders-api/dev
-            tags: ["dev-current"] # exact-match existence check
+            tag: "dev-current" # pins one tag: 0 or 1 Application
   template:
     metadata:
       name: orders-api-dev
     spec:
       project: default
       source:
-        repoURL: "{{ .oci.registry }}/{{ .oci.repository }}"
+        repoURL: "oci://{{ .oci.registry }}/{{ .oci.repository }}"
         targetRevision: "{{ .oci.tag }}"
-        chart: "" # set if this is a Helm OCI chart
+        path: generated
       destination:
         server: https://kubernetes.default.svc
         namespace: orders-api

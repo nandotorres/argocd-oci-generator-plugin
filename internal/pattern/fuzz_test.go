@@ -38,14 +38,13 @@ func FuzzCompileMatch(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, pattern, subject string) {
 		{
-			const mode = ModePath
 			// Keep inputs bounded so the fuzzer spends its time on shapes rather
 			// than on pathologically long strings.
 			if len(pattern) > 1024 || len(subject) > 1024 {
 				t.Skip()
 			}
 
-			p, err := Compile(pattern, mode)
+			p, err := Compile(pattern)
 			if err != nil {
 				if p != nil {
 					t.Fatalf("Compile(%q) returned both a pattern and an error %v", pattern, err)
@@ -99,32 +98,6 @@ func FuzzCompileMatch(f *testing.F) {
 			// Matching is deterministic: the same input must match again.
 			if _, _, ok2 := p.Match(subject); !ok2 {
 				t.Fatalf("Match(%q) not deterministic for pattern %q", subject, pattern)
-			}
-		}
-	})
-}
-
-// FuzzCompileTagMode fuzzes tag-mode compilation specifically, since tag
-// patterns use minimal-run semantics that differ from path matching.
-func FuzzCompileTagMode(f *testing.F) {
-	for _, s := range []string{"{app}-current", "v*", "*-rc*", "{a}{b}", "", "?", "**"} {
-		f.Add(s, "orders-current")
-	}
-	f.Fuzz(func(t *testing.T, pattern, subject string) {
-		if len(pattern) > 512 || len(subject) > 512 {
-			t.Skip()
-		}
-		p, err := Compile(pattern, ModeTag)
-		if err != nil {
-			return
-		}
-		named, ordered, ok := p.Match(subject)
-		if !ok {
-			return
-		}
-		for _, c := range ordered {
-			if c.Name != "" && named[c.Name] != c.Value {
-				t.Fatalf("tag capture mismatch for %q (pattern %q)", c.Name, pattern)
 			}
 		}
 	})

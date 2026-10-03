@@ -24,10 +24,14 @@ spec:
               selector:
                 matchLabels:
                   example.com/auto-create-apps: "true"
-          # 2) Discover the per-cluster OCI artifact. The repository is
-          #    interpolated with the cluster name from the clusters generator.
-          #    Use {{ .nameNormalized }} if cluster names aren't valid OCI path
-          #    segments (uppercase, etc.).
+          # 2) Does this cluster have an artifact published? The tag is
+          #    interpolated with the cluster name from the clusters generator,
+          #    so a cluster that has not been published to yields no result and
+          #    simply gets no Application.
+          #
+          #    Keep the repository constant and put the per-cluster dimension in
+          #    the tag: an absent tag in a repository that exists is a definitive
+          #    "nothing here", whereas an absent repository is an error.
           - plugin:
               configMapRef:
                 name: oci-generator
@@ -35,8 +39,8 @@ spec:
               input:
                 parameters:
                   registry: registry.example.com
-                  repository: "apps-oci/web-app/{{ .name }}"
-                  tags: ["stable"]
+                  repository: "apps-oci/web-app"
+                  tag: "{{ .name }}-current"
   template:
     metadata:
       name: "web-app-{{ .name }}"
@@ -46,9 +50,9 @@ spec:
         name: "{{ .name }}"
         namespace: web-app
       source:
-        repoURL: "{{ .oci.registry }}"
-        chart: "{{ .oci.repository }}"
+        repoURL: "oci://{{ .oci.registry }}/{{ .oci.repository }}"
         targetRevision: "{{ .oci.tag }}"
+        path: generated
       syncPolicy:
         automated:
           prune: true

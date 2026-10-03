@@ -166,7 +166,7 @@ func (c *Config) validate() error {
 		}
 
 		for j, glob := range r.AllowedRepositories {
-			p, err := pattern.Compile(glob, pattern.ModePath)
+			p, err := pattern.Compile(glob)
 			if err != nil {
 				return fmt.Errorf("registries[%d].allowedRepositories[%d]: %w", i, j, err)
 			}

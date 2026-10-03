@@ -13,8 +13,8 @@ Standard Go and process collectors, plus:
 |---|---|---|---|
 | `ocigen_getparams_requests_total` | counter | `code` | Request volume and failures by HTTP status. |
 | `ocigen_getparams_duration_seconds` | histogram | `code` | End-to-end latency; compare with `requestTimeoutSeconds`. |
-| `ocigen_generated_parameters` | histogram | - | Parameter sets per successful generation. |
-| `ocigen_registry_requests_total` | counter | `operation`, `outcome` | Upstream calls: `catalog`, `list_tags`, `head`, `get`. |
+| `ocigen_generated_parameters` | histogram | - | Parameter sets per successful generation: 1 when the artifact exists, 0 when it does not. |
+| `ocigen_registry_requests_total` | counter | `operation`, `outcome` | Upstream calls: `head` (tag resolution) and `list_tags` (repository probe). |
 | `ocigen_registry_request_duration_seconds` | histogram | `operation` | Upstream latency, to tell registry slowness from ours. |
 
 Status codes map to the fail-closed contract: `200` with parameters or an empty
@@ -94,21 +94,28 @@ groups:
           summary: Over 5% of registry calls are failing
 ```
 
-Deliberately **not** alerted: `ocigen_generated_parameters` reaching zero. An
-empty result is legitimate (tag removed, service not published yet) and it is
-how Applications are meant to be pruned. If a given ApplicationSet must never be
-empty, express that with `failOnEmpty: true` so it becomes a `502` and is caught
-by the first alert.
+An individual empty result is normal: it is how an unpublished environment
+yields no Application, and how a decommissioned one is pruned. Many
+ApplicationSets going empty at once is not, so alert on the aggregate rather
+than on any single generation:
+
+```yaml
+      # Normal individually; never normal in bulk.
+      - alert: OCIGeneratorManyEmptyResults
+        expr: sum(rate(ocigen_generated_parameters_bucket{le="0"}[10m])) > 5
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: Many ApplicationSets are generating no Applications
+```
 
 ## Reading the numbers
 
 - Split `ocigen_getparams_duration_seconds` against
   `ocigen_registry_request_duration_seconds` to see whether latency is ours or
   the registry's. It is usually the registry: the work is I/O bound.
-- `ocigen_registry_requests_total{operation="get"}` rising means queries are
-  fetching manifests (`artifactType`, `annotationSelectors`, `sort: created`),
-  which costs a round trip per tag. `head` is the cheap path.
-- `operation="catalog"` only appears for wildcard `repository` patterns, which
-  need registry catalog support.
+- `operation="list_tags"` is the probe issued only when a `head` misses, to tell
+  an absent tag apart from an absent repository. A rising ratio of it means more
+  environments are unpublished than you expect.
 
 See the README's operating notes for measured throughput and sizing guidance.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,18 +11,15 @@ import (
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/oci"
 )
 
-// fakeClient is an in-memory RegistryClient for tests.
 type fakeClient struct {
-	repos map[string][]string     // registry -> repositories
-	tags  map[string][]string     // "registry/repo" -> tags
+	tags  map[string][]string     // "registry/repo" -> tags ("" key absent = repo absent)
 	arts  map[string]oci.Artifact // "registry/repo:tag" -> artifact
-	err   map[string]error        // method-name -> error to return
-	calls map[string]int          // method-name -> count
+	err   map[string]error        // method -> error
+	calls map[string]int
 }
 
 func newFakeClient() *fakeClient {
 	return &fakeClient{
-		repos: map[string][]string{},
 		tags:  map[string][]string{},
 		arts:  map[string]oci.Artifact{},
 		err:   map[string]error{},
@@ -31,49 +27,40 @@ func newFakeClient() *fakeClient {
 	}
 }
 
-func (f *fakeClient) ListRepositories(_ context.Context, registry, _ string) ([]string, error) {
-	f.calls["ListRepositories"]++
-	if e := f.err["ListRepositories"]; e != nil {
-		return nil, e
+// TagExists mirrors the real client: an absent repository is an error, an
+// absent tag in an existing repository is simply false.
+func (f *fakeClient) TagExists(_ context.Context, registry, repo, tag string) (bool, error) {
+	f.calls["TagExists"]++
+	if err := f.err["TagExists"]; err != nil {
+		return false, err
 	}
-	return f.repos[registry], nil
-}
-
-func (f *fakeClient) ListTags(_ context.Context, registry, repo string) ([]string, error) {
-	f.calls["ListTags"]++
-	if e := f.err["ListTags"]; e != nil {
-		return nil, e
+	tags, ok := f.tags[registry+"/"+repo]
+	if !ok {
+		return false, errors.New("repository does not exist")
 	}
-	return f.tags[registry+"/"+repo], nil
+	for _, t := range tags {
+		if t == tag {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *fakeClient) Head(_ context.Context, registry, repo, tag string) (*oci.Artifact, error) {
 	f.calls["Head"]++
-	if e := f.err["Head"]; e != nil {
-		return nil, e
+	if err := f.err["Head"]; err != nil {
+		return nil, err
 	}
-	a := f.arts[registry+"/"+repo+":"+tag]
-	return &a, nil
-}
-
-func (f *fakeClient) Get(_ context.Context, registry, repo, tag string) (*oci.Artifact, error) {
-	f.calls["Get"]++
-	if e := f.err["Get"]; e != nil {
-		return nil, e
+	a, ok := f.arts[registry+"/"+repo+":"+tag]
+	if !ok {
+		return nil, errors.New("not found")
 	}
-	a := f.arts[registry+"/"+repo+":"+tag]
 	return &a, nil
 }
 
 func (f *fakeClient) addArtifact(a oci.Artifact) {
-	rr := a.Registry + "/" + a.Repository
-	if !contains(f.repos[a.Registry], a.Repository) {
-		f.repos[a.Registry] = append(f.repos[a.Registry], a.Repository)
-	}
-	if !contains(f.tags[rr], a.Tag) {
-		f.tags[rr] = append(f.tags[rr], a.Tag)
-	}
-	f.arts[rr+":"+a.Tag] = a
+	f.tags[a.Registry+"/"+a.Repository] = append(f.tags[a.Registry+"/"+a.Repository], a.Tag)
+	f.arts[a.Registry+"/"+a.Repository+":"+a.Tag] = a
 }
 
 func mustCompile(t *testing.T, in Input) *Query {
@@ -83,182 +70,87 @@ func mustCompile(t *testing.T, in Input) *Query {
 	return q
 }
 
-// Canonical example: create an app iff a specific tag exists.
-func TestExistenceCheck(t *testing.T) {
+func TestTagPresentYieldsOneParamSet(t *testing.T) {
 	f := newFakeClient()
 	f.addArtifact(oci.Artifact{
-		Registry:   "registry.example.com",
-		Repository: "apps-oci/orders-api/orders-api/dev",
-		Tag:        "dev-current",
-		Digest:     "sha256:abc",
-		MediaType:  "application/vnd.oci.image.manifest.v1+json",
+		Registry: "r", Repository: "apps/app", Tag: "prod-current",
+		Digest: "sha256:abc", MediaType: "application/vnd.oci.image.manifest.v1+json",
 	})
-	g := New(f, nil)
 
-	q := mustCompile(t, Input{
-		Registry:   "registry.example.com",
-		Repository: "apps-oci/orders-api/orders-api/dev",
-		Tags:       []string{"dev-current"},
-	})
-	params, err := g.Generate(context.Background(), q)
+	got, err := New(f, nil).Generate(context.Background(),
+		mustCompile(t, Input{Registry: "r", Repository: "apps/app", Tag: "prod-current"}))
 	require.NoError(t, err)
-	require.Len(t, params, 1)
+	require.Len(t, got, 1)
 
-	got := params[0]["oci"].(map[string]any)
-	assert.Equal(t, "dev-current", got["tag"])
-	assert.Equal(t, "registry.example.com/apps-oci/orders-api/orders-api/dev@sha256:abc", got["pinnedRef"])
-	assert.Zero(t, f.calls["ListRepositories"], "no catalog call for a literal repository")
+	o := got[0]["oci"].(map[string]any)
+	assert.Equal(t, "prod-current", o["tag"])
+	assert.Equal(t, "sha256:abc", o["digest"])
+	assert.Equal(t, "r/apps/app:prod-current", o["ref"])
+	assert.Equal(t, "r/apps/app@sha256:abc", o["pinnedRef"])
 }
 
-// Absent tag (registry reachable) => empty result, not an error.
-func TestExistenceCheckAbsentTagIsEmpty(t *testing.T) {
+// "Not published here yet" is a definitive answer, so it is an empty result and
+// not an error: no Application is created, and none is deleted by mistake.
+func TestTagAbsentYieldsNoParams(t *testing.T) {
 	f := newFakeClient()
-	f.tags["registry.example.com/apps-oci/orders-api/orders-api/dev"] = []string{"v1", "v2"}
-	g := New(f, nil)
+	f.tags["r/apps/app"] = []string{"v1"}
 
-	q := mustCompile(t, Input{
-		Registry:   "registry.example.com",
-		Repository: "apps-oci/orders-api/orders-api/dev",
-		Tags:       []string{"dev-current"},
-	})
-	params, err := g.Generate(context.Background(), q)
+	got, err := New(f, nil).Generate(context.Background(),
+		mustCompile(t, Input{Registry: "r", Repository: "apps/app", Tag: "prod-current"}))
 	require.NoError(t, err)
-	assert.Empty(t, params)
+	assert.Empty(t, got)
+	assert.Equal(t, 0, f.calls["Head"], "an absent tag must not be resolved")
 }
 
-// FailOnEmpty turns an empty result into an error (fail closed).
-func TestFailOnEmpty(t *testing.T) {
+// A repository that does not exist is an anomaly, not an empty result.
+func TestMissingRepositoryIsAnError(t *testing.T) {
 	f := newFakeClient()
-	f.tags["r/repo"] = []string{"v1"}
-	g := New(f, nil)
-	q := mustCompile(t, Input{Registry: "r", Repository: "repo", Tags: []string{"nope"}, FailOnEmpty: true})
-	_, err := g.Generate(context.Background(), q)
-	assert.Error(t, err)
-}
-
-// Registry failures must surface as errors (design rule #1: no deletions).
-func TestListTagsErrorPropagates(t *testing.T) {
-	f := newFakeClient()
-	f.err["ListTags"] = errors.New("boom")
-	g := New(f, nil)
-	q := mustCompile(t, Input{Registry: "r", Repository: "repo"})
-	_, err := g.Generate(context.Background(), q)
+	_, err := New(f, nil).Generate(context.Background(),
+		mustCompile(t, Input{Registry: "r", Repository: "apps/never", Tag: "prod-current"}))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "boom")
 }
 
-func TestCatalogErrorPropagates(t *testing.T) {
+// Any failure to obtain an answer must propagate, so the controller changes
+// nothing.
+func TestRegistryFailurePropagates(t *testing.T) {
 	f := newFakeClient()
-	f.err["ListRepositories"] = errors.New("catalog down")
-	g := New(f, nil)
-	q := mustCompile(t, Input{Registry: "r", Repository: "apps/*"})
-	_, err := g.Generate(context.Background(), q)
+	f.err["TagExists"] = errors.New("registry unreachable")
+
+	_, err := New(f, nil).Generate(context.Background(),
+		mustCompile(t, Input{Registry: "r", Repository: "apps/app", Tag: "x"}))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "catalog down")
+	assert.Contains(t, err.Error(), "registry unreachable")
 }
 
-// Wildcard repositories + tag pattern with captures.
-func TestWildcardReposAndCaptures(t *testing.T) {
+func TestDisallowedRepository(t *testing.T) {
 	f := newFakeClient()
-	base := "application/vnd.oci.image.manifest.v1+json"
-	for _, r := range []struct{ repo, tag string }{
-		{"apps-oci/payments/x/dev", "orders-api-current"},
-		{"apps-oci/checkout/y/dev", "checkout-current"},
-		{"apps-oci/checkout/y/prod", "checkout-current"}, // excluded: env != dev
-		{"other/thing/dev", "z-current"},                 // excluded: prefix
+	q := mustCompile(t, Input{Registry: "r", Repository: "other/thing", Tag: "x"})
+	q.AllowRepository = func(repo string) bool { return repo == "apps/app" }
+
+	_, err := New(f, nil).Generate(context.Background(), q)
+	require.ErrorIs(t, err, ErrRepositoryNotAllowed)
+	assert.Equal(t, 0, f.calls["TagExists"], "policy is enforced before any registry call")
+}
+
+func TestCompileValidation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in   Input
+		want string
+	}{
+		"no registry":   {Input{Repository: "a/b", Tag: "x"}, "registry is required"},
+		"no repository": {Input{Registry: "r", Tag: "x"}, "repository is required"},
+		"no tag":        {Input{Registry: "r", Repository: "a/b"}, "tag is required"},
 	} {
-		f.addArtifact(oci.Artifact{Registry: "reg", Repository: r.repo, Tag: r.tag, Digest: "sha256:d", MediaType: base})
+		t.Run(name, func(t *testing.T) {
+			_, err := tc.in.Compile("")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
 	}
-	g := New(f, nil)
-
-	q := mustCompile(t, Input{
-		Registry:   "reg",
-		Repository: "apps-oci/**/{env}",
-		TagPattern: "{app}-current",
-	})
-	// Constrain env to dev via an exclude-nothing include filter is not needed;
-	// the pattern already requires the last segment to be captured as {env}.
-	params, err := g.Generate(context.Background(), q)
-	require.NoError(t, err)
-
-	// Keep only env==dev by post-asserting captures.
-	var devs []map[string]any
-	for _, p := range params {
-		o := p["oci"].(map[string]any)
-		caps := o["captures"].(map[string]any)
-		if caps["env"] == "dev" {
-			devs = append(devs, o)
-		}
-	}
-	require.Len(t, devs, 2)
-
-	// Assert the payments one has the right merged captures + wildcards.
-	var payments map[string]any
-	for _, o := range devs {
-		if o["repository"] == "apps-oci/payments/x/dev" {
-			payments = o
-		}
-	}
-	require.NotNil(t, payments)
-	caps := payments["captures"].(map[string]any)
-	assert.Equal(t, "dev", caps["env"])
-	assert.Equal(t, "orders-api", caps["app"])
-	// repo wildcard "**" captured "payments/x", tag wildcard none (named only).
-	assert.Equal(t, []any{"payments/x"}, payments["wildcards"])
 }
 
-func TestSemverSortDescAndLimit(t *testing.T) {
-	f := newFakeClient()
-	for _, tag := range []string{"v1.0.0", "v1.2.0", "v1.10.0", "v2.0.0", "latest"} {
-		f.addArtifact(oci.Artifact{Registry: "reg", Repository: "app", Tag: tag, Digest: "sha256:d"})
-	}
-	g := New(f, nil)
-	q := mustCompile(t, Input{
-		Registry:   "reg",
-		Repository: "app",
-		TagFilters: []TagFilterSpec{{SemVer: ">= 1.0.0"}},
-		Sort:       SortSemVer,
-		Order:      OrderDesc,
-		Limit:      2,
-	})
-	params, err := g.Generate(context.Background(), q)
+func TestRegistryDefaultApplies(t *testing.T) {
+	q, err := Input{Repository: "a/b", Tag: "x"}.Compile("default.example.com")
 	require.NoError(t, err)
-	require.Len(t, params, 2)
-	assert.Equal(t, "v2.0.0", params[0]["oci"].(map[string]any)["tag"])
-	assert.Equal(t, "v1.10.0", params[1]["oci"].(map[string]any)["tag"], "semver order, not lexical")
-}
-
-func TestAnnotationSelectorAndArtifactType(t *testing.T) {
-	f := newFakeClient()
-	created := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
-	f.addArtifact(oci.Artifact{
-		Registry: "reg", Repository: "charts/app", Tag: "1.0.0", Digest: "sha256:d",
-		ArtifactType: "application/vnd.cncf.helm.config.v1+json",
-		Annotations:  map[string]string{"org.opencontainers.image.vendor": "acme"},
-		CreatedAt:    &created,
-	})
-	f.addArtifact(oci.Artifact{
-		Registry: "reg", Repository: "charts/app", Tag: "1.0.1", Digest: "sha256:e",
-		ArtifactType: "application/vnd.docker.container.image.v1+json",
-		Annotations:  map[string]string{"org.opencontainers.image.vendor": "other"},
-	})
-	g := New(f, nil)
-
-	q := mustCompile(t, Input{
-		Registry:     "reg",
-		Repository:   "charts/app",
-		ArtifactType: "application/vnd.cncf.helm.config.v1+json",
-		AnnotationSelectors: []AnnotationSelector{
-			{Key: "org.opencontainers.image.vendor", Operator: OpIn, Values: []string{"acme"}},
-		},
-	})
-	assert.True(t, q.NeedsManifest)
-	params, err := g.Generate(context.Background(), q)
-	require.NoError(t, err)
-	require.Len(t, params, 1)
-	o := params[0]["oci"].(map[string]any)
-	assert.Equal(t, "1.0.0", o["tag"])
-	assert.Equal(t, "2024-05-01T12:00:00Z", o["createdAt"])
-	assert.Positive(t, f.calls["Get"], "manifest GET used when filters need it")
-	assert.Zero(t, f.calls["Head"])
+	assert.Equal(t, "default.example.com", q.Registry)
 }

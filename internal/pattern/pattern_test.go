@@ -9,13 +9,13 @@ import (
 
 func TestCompileErrors(t *testing.T) {
 	for _, p := range []string{"", "a/{unclosed", "a/{bad-name}", "a/{dup}/{dup}"} {
-		_, err := Compile(p, ModePath)
+		_, err := Compile(p)
 		assert.Error(t, err, "pattern %q should fail", p)
 	}
 }
 
 func TestLiteralNoWildcard(t *testing.T) {
-	p, err := Compile("apps-oci/orders-api/dev", ModePath)
+	p, err := Compile("apps-oci/orders-api/dev")
 	require.NoError(t, err)
 	assert.False(t, p.HasWildcard())
 	assert.Equal(t, "apps-oci/orders-api/dev", p.LiteralPrefix())
@@ -27,7 +27,7 @@ func TestLiteralNoWildcard(t *testing.T) {
 }
 
 func TestDotIsLiteral(t *testing.T) {
-	p, err := Compile("repo/v1.2.3", ModePath)
+	p, err := Compile("repo/v1.2.3")
 	require.NoError(t, err)
 	_, _, ok := p.Match("repo/v1.2.3")
 	assert.True(t, ok)
@@ -36,7 +36,7 @@ func TestDotIsLiteral(t *testing.T) {
 }
 
 func TestSingleSegmentStar(t *testing.T) {
-	p, err := Compile("a/*/c", ModePath)
+	p, err := Compile("a/*/c")
 	require.NoError(t, err)
 	assert.True(t, p.HasWildcard())
 	assert.Equal(t, "a/", p.LiteralPrefix())
@@ -50,7 +50,7 @@ func TestSingleSegmentStar(t *testing.T) {
 }
 
 func TestNamedCaptures(t *testing.T) {
-	p, err := Compile("apps-oci/{team}/{env}", ModePath)
+	p, err := Compile("apps-oci/{team}/{env}")
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"team", "env"}, p.CaptureNames())
 
@@ -63,7 +63,7 @@ func TestNamedCaptures(t *testing.T) {
 }
 
 func TestGlobstarMiddle(t *testing.T) {
-	p, err := Compile("a/**/b", ModePath)
+	p, err := Compile("a/**/b")
 	require.NoError(t, err)
 
 	cases := map[string]struct {
@@ -86,14 +86,14 @@ func TestGlobstarMiddle(t *testing.T) {
 }
 
 func TestGlobstarLeadingAndTrailing(t *testing.T) {
-	lead, err := Compile("**/dev", ModePath)
+	lead, err := Compile("**/dev")
 	require.NoError(t, err)
 	for in, want := range map[string]bool{"dev": true, "a/dev": true, "a/b/dev": true, "dev/x": false} {
 		_, _, ok := lead.Match(in)
 		assert.Equal(t, want, ok, "leading input %q", in)
 	}
 
-	trail, err := Compile("apps-oci/**", ModePath)
+	trail, err := Compile("apps-oci/**")
 	require.NoError(t, err)
 	assert.Equal(t, "apps-oci/", trail.LiteralPrefix())
 	for in, want := range map[string]bool{
@@ -109,14 +109,14 @@ func TestGlobstarLeadingAndTrailing(t *testing.T) {
 
 // The user's canonical example, in our syntax.
 func TestUserExampleRepoAndTag(t *testing.T) {
-	repo, err := Compile("apps-oci/**/{env}", ModePath)
+	repo, err := Compile("apps-oci/**/{env}")
 	require.NoError(t, err)
 	named, ordered, ok := repo.Match("apps-oci/orders-api/orders-api/dev")
 	require.True(t, ok)
 	assert.Equal(t, "dev", named["env"])
 	assert.Equal(t, []string{"orders-api/orders-api"}, Anonymous(ordered))
 
-	tag, err := Compile("{something}-current", ModeTag)
+	tag, err := Compile("{something}-current")
 	require.NoError(t, err)
 	tnamed, _, ok := tag.Match("dev-current")
 	require.True(t, ok)
@@ -131,7 +131,7 @@ func TestUserExampleRepoAndTag(t *testing.T) {
 }
 
 func TestTagModeStarMatchesAcrossHyphens(t *testing.T) {
-	p, err := Compile("v1.*", ModeTag)
+	p, err := Compile("v1.*")
 	require.NoError(t, err)
 	for in, want := range map[string]bool{"v1.2.3": true, "v1.": true, "v2.0.0": false} {
 		_, _, ok := p.Match(in)
@@ -140,7 +140,7 @@ func TestTagModeStarMatchesAcrossHyphens(t *testing.T) {
 }
 
 func TestQuestionMark(t *testing.T) {
-	p, err := Compile("v?", ModeTag)
+	p, err := Compile("v?")
 	require.NoError(t, err)
 	_, _, ok := p.Match("v1")
 	assert.True(t, ok)
@@ -150,13 +150,10 @@ func TestQuestionMark(t *testing.T) {
 
 // Found by FuzzCompileMatch: a pattern containing invalid UTF-8 used to compile
 // successfully, but the literal prefix was built from decoded runes and so
-// contained U+FFFD. That prefix is used to narrow the registry catalog, so
-// matching repositories were silently dropped and the generator returned a
-// successful empty result, which deletes Applications. It must fail closed.
+// contained U+FFFD, making it not a prefix of the pattern at all. Reject such
+// patterns instead of silently mangling them.
 func TestCompileRejectsInvalidUTF8(t *testing.T) {
-	for _, mode := range []Mode{ModePath, ModeTag} {
-		p, err := Compile("apps/\xc2bad/**", mode)
-		assert.Error(t, err, "invalid UTF-8 pattern must be rejected")
-		assert.Nil(t, p)
-	}
+	p, err := Compile("apps/\xc2bad/**")
+	assert.Error(t, err, "invalid UTF-8 pattern must be rejected")
+	assert.Nil(t, p)
 }

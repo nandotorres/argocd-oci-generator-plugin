@@ -70,14 +70,14 @@ call() {
     -d "${body}" | (command -v jq >/dev/null && jq . || cat)
 }
 
-call "Existence check (tag present -> 1 result)" \
-  '{"applicationSetName":"smoke","input":{"parameters":{"repository":"apps-oci/orders-api/orders-api/dev","tags":["dev-current"]}}}'
+call "Tag present -> one parameter set" \
+  '{"applicationSetName":"smoke","input":{"parameters":{"repository":"apps-oci/orders-api/orders-api/dev","tag":"dev-current"}}}'
 
-call "Existence check (tag absent -> empty result)" \
-  '{"applicationSetName":"smoke","input":{"parameters":{"repository":"apps-oci/orders-api/orders-api/dev","tags":["does-not-exist"]}}}'
+call "Tag absent, repository present -> empty result (no Application)" \
+  '{"applicationSetName":"smoke","input":{"parameters":{"repository":"apps-oci/orders-api/orders-api/dev","tag":"does-not-exist"}}}'
 
-call "Wildcard + captures (repository: apps-oci/**/{env}, tag: {app}-current)" \
-  '{"applicationSetName":"smoke","input":{"parameters":{"repository":"apps-oci/**/{env}","tagPattern":"{app}-current"}}}'
+call "Repository absent -> error (nothing is deleted)" \
+  '{"applicationSetName":"smoke","input":{"parameters":{"repository":"apps-oci/never/published","tag":"dev-current"}}}'
 
 echo
 echo "==> Smoke test complete."

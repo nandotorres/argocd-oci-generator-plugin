@@ -294,7 +294,7 @@ spec:
           parameters:
             registry: ${REG_IN_CLUSTER}
             repository: apps-oci/demo
-            tags: ["1.0.0"]
+            tag: "1.0.0"
   template:
     metadata:
       name: demo-dev
