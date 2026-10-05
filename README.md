@@ -43,9 +43,10 @@ built-in generator does not:
   `repository` exists, or that it exists and holds at least one tag. See
   [Match modes](#match-modes).
 - **Centralized credentials and an allowlist.** Registry auth (basic, ECR,
-  anonymous) lives on the server, and `allowedRepositories` globs limit what any
-  ApplicationSet may target. Authors only name a `registry` and `repository` and
-  never handle a credential.
+  anonymous) lives on this plugin's own Deployment — not in the ApplicationSet,
+  and not in Argo CD's repo-server — and `allowedRepositories` globs limit what
+  any ApplicationSet may target. Authors only name a `registry` and
+  `repository` and never handle a credential.
 
 What it does **not** do: read or filter the contents of an artifact, and it does
 not filter tags (no regex or semver). It takes a literal `tag` (or no tag, for
@@ -58,7 +59,7 @@ So, picking a tool:
 - **Fanning out over the files inside an artifact?** Use the built-in OCI
   generator ([argoproj/argo-cd#26121](https://github.com/argoproj/argo-cd/pull/26121), Argo CD 3.6).
 - **Creating an Application only when an artifact or repository exists —
-  fail-closed, digest-pinned, with server-side credentials?** That is what this
+  fail-closed, digest-pinned, with credentials held by the plugin?** That is what this
   plugin is for, and the built-in generator does not do it.
 
 ## Try it locally
