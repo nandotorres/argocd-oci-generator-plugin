@@ -5,14 +5,20 @@ and the HTTP contract.
 
 ## 1. Problem
 
-Argo CD doesn't provide a first-class ApplicationSet generator for OCI
-registries. For example, if your teams publish Helm charts or other OCI
-artifacts, there's no built-in way to create an Application per artifact that
-matches some rules, the way the Git generator does for files and directories.
+Argo CD added a built-in OCI generator
+([argoproj/argo-cd#26121](https://github.com/argoproj/argo-cd/pull/26121)),
+slated for the 3.6 release. It
+mirrors the Git generator: it reads the directories and files inside an OCI
+artifact and emits one parameter set per match. Use it when you want to fan out
+over the *contents* of an artifact.
 
-This project adds that as an ApplicationSet plugin generator: an HTTP service the
-ApplicationSet controller calls, with parity to the Git generator plus
-OCI-specific narrowing (tags, semver, annotations, artifact types).
+This project solves a different problem: deciding whether an Application should
+exist at all, based on whether an artifact is published, and doing so
+fail-closed. A registry outage must not delete Applications. The built-in
+generator reads content; it does not gate existence this way, and it does not
+centralize registry credentials on a server so ApplicationSet authors never hold
+them. This project covers that gap as an ApplicationSet plugin generator: an
+HTTP service the ApplicationSet controller calls.
 
 ## 2. How plugin generators work
 

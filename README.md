@@ -18,6 +18,50 @@ Credentials live on the plugin server. The ApplicationSet only names a
 
 Internals: [DESIGN.md](DESIGN.md).
 
+## When to use this (and when not to)
+
+Argo CD has a built-in OCI generator
+([argoproj/argo-cd#26121](https://github.com/argoproj/argo-cd/pull/26121)),
+slated for the 3.6 release. It works like
+the Git generator: it reads the directories and files inside an OCI artifact and
+creates one Application per match. If you want to pull content out of an artifact
+and fan out over it, use that. It is native, maintained by Argo CD, and needs no
+extra service.
+
+This plugin does a different job. It does not read what is inside an artifact. It
+decides whether an Application should exist, and gives you a few things the
+built-in generator does not:
+
+- **Fail-closed existence gating.** It answers one question — does
+  `registry/repository:tag` exist? — and if the registry is down or auth fails,
+  that is an error, so Argo CD changes nothing. A missing artifact deletes its
+  Application; a broken registry never does. This is the whole point.
+- **Digest pinning.** The output includes the resolved `digest` and a
+  digest-pinned `pinnedRef` (`registry/repo@sha256:…`), so your Application can
+  track an immutable reference even when the tag it was found by is mutable.
+- **Three existence modes.** Match a specific `tag`, or just that the
+  `repository` exists, or that it exists and holds at least one tag. See
+  [Match modes](#match-modes).
+- **Centralized credentials and an allowlist.** Registry auth (basic, ECR,
+  anonymous) lives on this plugin's own Deployment — not in the ApplicationSet,
+  and not in Argo CD's repo-server — and `allowedRepositories` globs limit what
+  any ApplicationSet may target. Authors only name a `registry` and
+  `repository` and never handle a credential.
+
+What it does **not** do: read or filter the contents of an artifact, and it does
+not filter tags (no regex or semver). It takes a literal `tag` (or no tag, for
+the repository modes).
+
+So, picking a tool:
+
+- **Deploying a known OCI artifact?** Use Argo CD's OCI source directly. No
+  generator needed.
+- **Fanning out over the files inside an artifact?** Use the built-in OCI
+  generator ([argoproj/argo-cd#26121](https://github.com/argoproj/argo-cd/pull/26121), Argo CD 3.6).
+- **Creating an Application only when an artifact or repository exists —
+  fail-closed, digest-pinned, with credentials held by the plugin?** That is what this
+  plugin is for, and the built-in generator does not do it.
+
 ## Try it locally
 
 Needs Docker and Go.

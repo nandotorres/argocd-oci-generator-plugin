@@ -7,8 +7,7 @@
 //   - the "**" globstar (zero or more path segments), and
 //   - named captures "{name}" plus positional captures for "*"/"**"/"?".
 //
-// The syntax is glob, not regexp: "." is a literal. Use tagFilters (regex) when
-// you need full regular expressions.
+// The syntax is glob, not regexp: "." is a literal.
 package pattern
 
 import (
@@ -40,8 +39,7 @@ func (p *Pattern) Raw() string { return p.raw }
 // HasWildcard reports whether the pattern contains any wildcard or capture.
 func (p *Pattern) HasWildcard() bool { return p.hasWildcard }
 
-// LiteralPrefix returns the literal prefix before the first wildcard. It is used
-// to cheaply narrow a registry catalog before full matching.
+// LiteralPrefix returns the literal prefix before the first wildcard.
 func (p *Pattern) LiteralPrefix() string { return p.literalPrefix }
 
 // CaptureNames returns the declared named captures, in order of appearance.
