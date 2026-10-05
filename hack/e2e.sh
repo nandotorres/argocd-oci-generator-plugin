@@ -11,6 +11,9 @@
 #      Application that Argo CD actually SYNCS (deploys a real ConfigMap)
 #   6. a "break": the registry is taken down so the generator errors, and we
 #      show the ApplicationSet does NOT delete the already-created Application.
+#   7. a "recover": the registry is brought back and the chart re-pushed, so the
+#      generator succeeds again and the Application returns to Synced/Healthy.
+#      The demo ends in a working state.
 #
 # Requirements: docker, kind, kubectl, helm, openssl. Nothing else.
 #
@@ -35,6 +38,43 @@ c_blue=$'\033[36m'; c_green=$'\033[32m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_
 step() { echo; echo "${c_blue}==> $*${c_off}"; }
 ok()   { echo "${c_green}  ✓ $*${c_off}"; }
 warn() { echo "${c_red}  ! $*${c_off}"; }
+
+# Block until the registry answers on the host port, or fail after ~60s.
+wait_registry_reachable() {
+  local i
+  for i in $(seq 1 30); do
+    curl -ks "https://localhost:${HOST_REG_PORT}/v2/" >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  warn "registry not reachable on localhost:${HOST_REG_PORT}"; return 1
+}
+
+# Package the minimal demo chart and push it as apps-oci/demo:1.0.0. Called once
+# for the initial deploy and again after the registry is brought back (its
+# storage is ephemeral, so a restart starts it empty).
+push_demo_chart() {
+  local dir chart
+  dir="$(mktemp -d)"; chart="${dir}/demo"
+  mkdir -p "${chart}/templates"
+  cat > "${chart}/Chart.yaml" <<'YAML'
+apiVersion: v2
+name: demo
+version: 1.0.0
+type: application
+YAML
+  cat > "${chart}/templates/configmap.yaml" <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-from-oci
+data:
+  message: "deployed by Argo CD from an OCI Helm chart discovered by the plugin"
+YAML
+  helm package "${chart}" -d "${dir}" >/dev/null
+  helm push "${dir}/demo-1.0.0.tgz" \
+    "oci://localhost:${HOST_REG_PORT}/apps-oci" --insecure-skip-tls-verify >/dev/null 2>&1
+  rm -rf "${dir}"
+}
 
 # Use a kubeconfig of our own, so kind never touches ~/.kube/config and the
 # demo cannot repoint (or unset) the context you use for real clusters.
@@ -126,30 +166,8 @@ ok "registry up over TLS (in-cluster: ${REG_IN_CLUSTER}, host: localhost:${HOST_
 
 # ---------------------------------------------------------------------------
 step "Packaging and pushing a minimal Helm chart as an OCI artifact"
-for i in $(seq 1 30); do
-  curl -ks "https://localhost:${HOST_REG_PORT}/v2/" >/dev/null 2>&1 && break
-  sleep 2; [[ $i -eq 30 ]] && { warn "registry not reachable on localhost:${HOST_REG_PORT}"; exit 1; }
-done
-CHART="$(mktemp -d)/demo"
-mkdir -p "${CHART}/templates"
-cat > "${CHART}/Chart.yaml" <<'YAML'
-apiVersion: v2
-name: demo
-version: 1.0.0
-type: application
-YAML
-cat > "${CHART}/templates/configmap.yaml" <<'YAML'
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: demo-from-oci
-data:
-  message: "deployed by Argo CD from an OCI Helm chart discovered by the plugin"
-YAML
-helm package "${CHART}" -d "$(dirname "${CHART}")" >/dev/null
-helm push "$(dirname "${CHART}")/demo-1.0.0.tgz" \
-  "oci://localhost:${HOST_REG_PORT}/apps-oci" --insecure-skip-tls-verify >/dev/null 2>&1
-rm -rf "$(dirname "${CHART}")"
+wait_registry_reachable || exit 1
+push_demo_chart
 ok "pushed apps-oci/demo:1.0.0"
 
 # ---------------------------------------------------------------------------
@@ -378,16 +396,42 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+step "RECOVER: bringing the registry back and re-pushing the chart"
+"${KUBECTL[@]}" -n registry scale deploy/registry --replicas=1
+"${KUBECTL[@]}" -n registry rollout status deploy/registry --timeout=120s
+wait_registry_reachable || exit 1
+push_demo_chart
+ok "registry back up; apps-oci/demo:1.0.0 re-pushed"
+
+step "Verifying the Application recovers (generator succeeds again)"
+# The controller may still be in the error backoff from the outage; nudge it so
+# it re-generates promptly instead of waiting out the backoff.
+"${KUBECTL[@]}" -n argocd rollout restart deploy/argocd-applicationset-controller >/dev/null 2>&1 || true
+"${KUBECTL[@]}" -n argocd rollout status deploy/argocd-applicationset-controller --timeout=90s >/dev/null 2>&1 || true
+if wait_for '{.status.sync.status}/{.status.health.status}' 'Synced/Healthy' 180; then
+  ok "Application 'demo-dev' is Synced + Healthy again"
+  "${KUBECTL[@]}" -n argocd get application demo-dev
+else
+  warn "Application did not return to Synced/Healthy after recovery"
+  "${KUBECTL[@]}" -n argocd get application demo-dev -o wide || true
+  "${KUBECTL[@]}" -n argocd logs deploy/oci-generator --tail=5 || true
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
 cat <<EOF
 
 ${c_green}==> Demo complete.${c_off}
 
-What you just saw:
+What you just saw (success -> failure -> success):
   • The plugin generator discovered the OCI Helm chart apps-oci/demo:1.0.0.
   • The ApplicationSet created Application 'demo-dev' and Argo CD DEPLOYED it
     (a real ConfigMap in namespace 'demo').
   • Taking the registry down makes the plugin fail closed (non-2xx), so Argo CD
     PRESERVES the existing Application instead of deleting it.
+  • Bringing the registry back (and re-pushing the chart) lets the generator
+    succeed again, and the Application returns to Synced/Healthy. The cluster is
+    left in a WORKING state.
   • (Contrast: with the registry healthy and the tag removed, the generator
     returns an empty set and the App would be pruned: a successful empty result,
     not an error.)
@@ -406,9 +450,6 @@ Open the Argo CD UI (HTTP, no certificate warning):
 If that password is rejected, the generated one is still in the cluster:
   kubectl -n argocd get secret argocd-initial-admin-secret \\
     -o jsonpath='{.data.password}' | base64 -d; echo
-
-Note: the demo registry uses ephemeral storage, so scaling it back up starts it
-empty; re-push with 'helm push ... --insecure-skip-tls-verify' to restore the chart.
 
 Tear everything down:
   hack/e2e.sh --clean          # or: make e2e-clean

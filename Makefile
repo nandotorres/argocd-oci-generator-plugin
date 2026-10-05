@@ -96,7 +96,7 @@ smoke: ## Run the local end-to-end smoke test against a throwaway registry
 	./hack/smoke.sh
 
 .PHONY: e2e
-e2e: ## Full kind-based demo (Argo CD + registry + plugin + break scenario)
+e2e: ## Full kind-based demo (Argo CD + registry + plugin; success -> break -> recover)
 	./hack/e2e.sh
 
 .PHONY: e2e-clean
