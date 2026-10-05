@@ -7,10 +7,16 @@
 #   2. a minimal Helm chart pushed to it as an OCI artifact (apps-oci/demo:1.0.0)
 #   3. Argo CD (incl. the ApplicationSet controller)
 #   4. this plugin, built from the repo Dockerfile and loaded into kind
-#   5. an ApplicationSet whose plugin generator DISCOVERS the chart, and an
-#      Application that Argo CD actually SYNCS (deploys a real ConfigMap)
+#   5. three ApplicationSets that exercise different plugin modes:
+#        - tag match (apps-oci/demo:1.0.0)  -> one Application, SYNCED
+#        - repository match (match: repository) -> one Application, SYNCED,
+#          created because the repository exists, with no specific tag
+#        - a missing tag (apps-oci/demo:9.9.9) -> NO Application (empty result)
 #   6. a "break": the registry is taken down so the generator errors, and we
-#      show the ApplicationSet does NOT delete the already-created Application.
+#      show the ApplicationSets do NOT delete the already-created Applications.
+#   7. a "recover": the registry is brought back and the chart re-pushed, so the
+#      generator succeeds again and the Applications return to Synced/Healthy.
+#      The demo ends in a working state.
 #
 # Requirements: docker, kind, kubectl, helm, openssl. Nothing else.
 #
@@ -35,6 +41,43 @@ c_blue=$'\033[36m'; c_green=$'\033[32m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_
 step() { echo; echo "${c_blue}==> $*${c_off}"; }
 ok()   { echo "${c_green}  ✓ $*${c_off}"; }
 warn() { echo "${c_red}  ! $*${c_off}"; }
+
+# Block until the registry answers on the host port, or fail after ~60s.
+wait_registry_reachable() {
+  local i
+  for i in $(seq 1 30); do
+    curl -ks "https://localhost:${HOST_REG_PORT}/v2/" >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  warn "registry not reachable on localhost:${HOST_REG_PORT}"; return 1
+}
+
+# Package the minimal demo chart and push it as apps-oci/demo:1.0.0. Called once
+# for the initial deploy and again after the registry is brought back (its
+# storage is ephemeral, so a restart starts it empty).
+push_demo_chart() {
+  local dir chart
+  dir="$(mktemp -d)"; chart="${dir}/demo"
+  mkdir -p "${chart}/templates"
+  cat > "${chart}/Chart.yaml" <<'YAML'
+apiVersion: v2
+name: demo
+version: 1.0.0
+type: application
+YAML
+  cat > "${chart}/templates/configmap.yaml" <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-from-oci
+data:
+  message: "deployed by Argo CD from an OCI Helm chart discovered by the plugin"
+YAML
+  helm package "${chart}" -d "${dir}" >/dev/null
+  helm push "${dir}/demo-1.0.0.tgz" \
+    "oci://localhost:${HOST_REG_PORT}/apps-oci" --insecure-skip-tls-verify >/dev/null 2>&1
+  rm -rf "${dir}"
+}
 
 # Use a kubeconfig of our own, so kind never touches ~/.kube/config and the
 # demo cannot repoint (or unset) the context you use for real clusters.
@@ -126,30 +169,8 @@ ok "registry up over TLS (in-cluster: ${REG_IN_CLUSTER}, host: localhost:${HOST_
 
 # ---------------------------------------------------------------------------
 step "Packaging and pushing a minimal Helm chart as an OCI artifact"
-for i in $(seq 1 30); do
-  curl -ks "https://localhost:${HOST_REG_PORT}/v2/" >/dev/null 2>&1 && break
-  sleep 2; [[ $i -eq 30 ]] && { warn "registry not reachable on localhost:${HOST_REG_PORT}"; exit 1; }
-done
-CHART="$(mktemp -d)/demo"
-mkdir -p "${CHART}/templates"
-cat > "${CHART}/Chart.yaml" <<'YAML'
-apiVersion: v2
-name: demo
-version: 1.0.0
-type: application
-YAML
-cat > "${CHART}/templates/configmap.yaml" <<'YAML'
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: demo-from-oci
-data:
-  message: "deployed by Argo CD from an OCI Helm chart discovered by the plugin"
-YAML
-helm package "${CHART}" -d "$(dirname "${CHART}")" >/dev/null
-helm push "$(dirname "${CHART}")/demo-1.0.0.tgz" \
-  "oci://localhost:${HOST_REG_PORT}/apps-oci" --insecure-skip-tls-verify >/dev/null 2>&1
-rm -rf "$(dirname "${CHART}")"
+wait_registry_reachable || exit 1
+push_demo_chart
 ok "pushed apps-oci/demo:1.0.0"
 
 # ---------------------------------------------------------------------------
@@ -285,8 +306,41 @@ done
 ok "plugin ready"
 
 # ---------------------------------------------------------------------------
-step "Applying the ApplicationSet (discovers apps-oci/demo:1.0.0, deploys it)"
+# await_generated APP APPSET: wait until the ApplicationSet has produced APP,
+# nudging the controller out of its error backoff if it raced into one.
+await_generated() {
+  local app="$1" appset="$2" i reason
+  for ((i=0; i<30; i++)); do
+    "${KUBECTL[@]}" -n argocd get application "$app" >/dev/null 2>&1 && return 0
+    reason="$("${KUBECTL[@]}" -n argocd get applicationset "$appset" \
+      -o jsonpath='{.status.conditions[?(@.type=="ErrorOccurred")].reason}' 2>/dev/null || true)"
+    if [[ "$reason" == "ApplicationGenerationFromParamsError" ]]; then
+      "${KUBECTL[@]}" -n argocd rollout restart deploy/argocd-applicationset-controller >/dev/null 2>&1 || true
+      "${KUBECTL[@]}" -n argocd rollout status deploy/argocd-applicationset-controller --timeout=90s >/dev/null 2>&1 || true
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+# wait_synced APP [timeout]: wait until APP is Synced/Healthy, hard-refreshing
+# between polls to clear any cached early repo-server comparison error.
+wait_synced() {
+  local app="$1" timeout="${2:-180}" i got
+  for ((i=0; i<timeout; i+=5)); do
+    got="$("${KUBECTL[@]}" -n argocd get application "$app" \
+      -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null || true)"
+    [[ "$got" == "Synced/Healthy" ]] && return 0
+    "${KUBECTL[@]}" -n argocd annotate application "$app" argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 || true
+    sleep 5
+  done
+  return 1
+}
+
+step "Applying ApplicationSets (tag match, repository match, and a missing tag)"
 cat <<YAML | "${KUBECTL[@]}" apply -f -
+# 1) Tag match (the default): create an Application only if apps-oci/demo:1.0.0
+#    resolves. The resolved tag and digest are available to the template.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata: { name: demo, namespace: argocd }
@@ -303,58 +357,111 @@ spec:
             repository: apps-oci/demo
             tag: "1.0.0"
   template:
-    metadata:
-      name: demo-dev
+    metadata: { name: demo-dev }
     spec:
       project: default
       source:
         repoURL: "{{ .oci.registry }}"
         chart: "{{ .oci.repository }}"
         targetRevision: "{{ .oci.tag }}"
-      destination:
-        server: https://kubernetes.default.svc
-        namespace: demo
+      destination: { server: https://kubernetes.default.svc, namespace: demo }
+      syncPolicy:
+        automated: { prune: true, selfHeal: true }
+        syncOptions: [CreateNamespace=true]
+---
+# 2) Repository match: create an Application because the repository EXISTS,
+#    regardless of any specific tag. match: repository returns no tag or digest,
+#    so the chart version is pinned in the template instead of templated.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata: { name: demo-repo, namespace: argocd }
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - plugin:
+        configMapRef: { name: oci-generator }
+        requeueAfterSeconds: 20
+        input:
+          parameters:
+            registry: ${REG_IN_CLUSTER}
+            repository: apps-oci/demo
+            match: repository
+  template:
+    metadata: { name: demo-repo-dev }
+    spec:
+      project: default
+      source:
+        repoURL: "{{ .oci.registry }}"
+        chart: "{{ .oci.repository }}"
+        targetRevision: "1.0.0"
+      destination: { server: https://kubernetes.default.svc, namespace: demo-repo }
+      syncPolicy:
+        automated: { prune: true, selfHeal: true }
+        syncOptions: [CreateNamespace=true]
+---
+# 3) A tag that was never published: the generator returns an empty result (a
+#    SUCCESSFUL empty list, not an error), so NO Application is created.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata: { name: demo-missing, namespace: argocd }
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - plugin:
+        configMapRef: { name: oci-generator }
+        requeueAfterSeconds: 20
+        input:
+          parameters:
+            registry: ${REG_IN_CLUSTER}
+            repository: apps-oci/demo
+            tag: "9.9.9"
+  template:
+    metadata: { name: demo-missing-dev }
+    spec:
+      project: default
+      source:
+        repoURL: "{{ .oci.registry }}"
+        chart: "{{ .oci.repository }}"
+        targetRevision: "{{ .oci.tag }}"
+      destination: { server: https://kubernetes.default.svc, namespace: demo-missing }
       syncPolicy:
         automated: { prune: true, selfHeal: true }
         syncOptions: [CreateNamespace=true]
 YAML
 
-# Wait for the Application to be generated. If the generator raced into an error
-# and the controller is now in its long backoff, nudge it to re-generate.
-for ((i=0; i<30; i++)); do
-  "${KUBECTL[@]}" -n argocd get application demo-dev >/dev/null 2>&1 && break
-  reason="$("${KUBECTL[@]}" -n argocd get applicationset demo \
-    -o jsonpath='{.status.conditions[?(@.type=="ErrorOccurred")].reason}' 2>/dev/null || true)"
-  if [[ "$reason" == "ApplicationGenerationFromParamsError" ]]; then
-    "${KUBECTL[@]}" -n argocd rollout restart deploy/argocd-applicationset-controller >/dev/null 2>&1 || true
-    "${KUBECTL[@]}" -n argocd rollout status deploy/argocd-applicationset-controller --timeout=90s >/dev/null 2>&1 || true
-  fi
-  sleep 5
+step "Verifying the deployments (tag match and repository match)"
+fail=0
+for app in demo-dev demo-repo-dev; do
+  await_generated "$app" "${app%-dev}" || { warn "$app was never generated"; fail=1; continue; }
 done
-
-wait_for() { # jsonpath expected timeout
-  local jp="$1" want="$2" timeout="$3" i got
-  for ((i=0; i<timeout; i+=5)); do
-    got="$("${KUBECTL[@]}" -n argocd get application demo-dev -o jsonpath="$jp" 2>/dev/null || true)"
-    [[ "$got" == "$want" ]] && return 0
-    # a fresh Application can cache an early repo-server comparison error; refresh it
-    "${KUBECTL[@]}" -n argocd annotate application demo-dev argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 || true
-    sleep 5
-  done
-  return 1
-}
-
-if wait_for '{.status.sync.status}/{.status.health.status}' 'Synced/Healthy' 180; then
-  ok "Application 'demo-dev' is Synced + Healthy"
-  "${KUBECTL[@]}" -n argocd get application demo-dev
-  echo "${c_dim}  deployed resource:${c_off}"
-  echo -n "    "; "${KUBECTL[@]}" -n demo get configmap demo-from-oci -o jsonpath='{.data.message}'; echo
+if wait_synced demo-dev; then
+  ok "tag match: 'demo-dev' is Synced + Healthy"
+  echo -n "${c_dim}    deployed: ${c_off}"; "${KUBECTL[@]}" -n demo get configmap demo-from-oci -o jsonpath='{.data.message}'; echo
 else
-  warn "Application did not reach Synced/Healthy in time"
-  "${KUBECTL[@]}" -n argocd get application demo-dev -o wide || true
+  warn "demo-dev did not reach Synced/Healthy"; fail=1
+fi
+if wait_synced demo-repo-dev; then
+  ok "repository match: 'demo-repo-dev' is Synced + Healthy (created because the repo exists)"
+else
+  warn "demo-repo-dev did not reach Synced/Healthy"; fail=1
+fi
+if [[ $fail -ne 0 ]]; then
+  "${KUBECTL[@]}" -n argocd get applications || true
   "${KUBECTL[@]}" -n argocd logs deploy/oci-generator --tail=5 || true
   exit 1
 fi
+
+step "Verifying the missing tag yields NO Application (successful empty result)"
+sleep 20   # let the controller run a couple of generation cycles
+if "${KUBECTL[@]}" -n argocd get application demo-missing-dev >/dev/null 2>&1; then
+  warn "demo-missing-dev exists, but tag 9.9.9 was never published!"
+  exit 1
+fi
+err="$("${KUBECTL[@]}" -n argocd get applicationset demo-missing \
+  -o jsonpath='{.status.conditions[?(@.type=="ErrorOccurred")].status}' 2>/dev/null || true)"
+ok "tag 9.9.9 absent -> no Application (empty result, ErrorOccurred=${err:-False})"
 
 # ---------------------------------------------------------------------------
 step "BREAK: taking the registry down (generator will now error)"
@@ -363,34 +470,69 @@ ok "registry scaled to 0; the plugin can no longer resolve tags"
 echo "${c_dim}  Waiting ~45s for generator requeues to fail...${c_off}"
 sleep 45
 
-step "Verifying the ApplicationSet did NOT delete the existing Application"
-if "${KUBECTL[@]}" -n argocd get application demo-dev >/dev/null 2>&1; then
-  ok "Application 'demo-dev' is STILL PRESENT despite the generator erroring"
-  echo
-  echo "${c_dim}  ApplicationSet error condition (fail-closed behaviour):${c_off}"
-  "${KUBECTL[@]}" -n argocd get applicationset demo \
-    -o jsonpath='{range .status.conditions[*]}{"    "}{.type}{": "}{.reason}{"\n"}{end}' 2>/dev/null || true
-  echo "${c_dim}  Plugin logs (recent generation failures):${c_off}"
-  "${KUBECTL[@]}" -n argocd logs deploy/oci-generator --tail=3 2>/dev/null | sed 's/^/    /' || true
-else
-  warn "Application was deleted; this is NOT the expected safe behaviour!"
+step "Verifying the ApplicationSets did NOT delete the existing Applications"
+missing=0
+for app in demo-dev demo-repo-dev; do
+  if "${KUBECTL[@]}" -n argocd get application "$app" >/dev/null 2>&1; then
+    ok "'$app' is STILL PRESENT despite the generator erroring"
+  else
+    warn "'$app' was deleted; this is NOT the expected safe behaviour!"; missing=1
+  fi
+done
+[[ $missing -eq 0 ]] || exit 1
+echo
+echo "${c_dim}  ApplicationSet error condition (fail-closed behaviour):${c_off}"
+"${KUBECTL[@]}" -n argocd get applicationset demo \
+  -o jsonpath='{range .status.conditions[*]}{"    "}{.type}{": "}{.reason}{"\n"}{end}' 2>/dev/null || true
+echo "${c_dim}  Plugin logs (recent generation failures):${c_off}"
+"${KUBECTL[@]}" -n argocd logs deploy/oci-generator --tail=3 2>/dev/null | sed 's/^/    /' || true
+
+# ---------------------------------------------------------------------------
+step "RECOVER: bringing the registry back and re-pushing the chart"
+"${KUBECTL[@]}" -n registry scale deploy/registry --replicas=1
+"${KUBECTL[@]}" -n registry rollout status deploy/registry --timeout=120s
+wait_registry_reachable || exit 1
+push_demo_chart
+ok "registry back up; apps-oci/demo:1.0.0 re-pushed"
+
+step "Verifying the Applications recover (generator succeeds again)"
+# The controller may still be in the error backoff from the outage; nudge it so
+# it re-generates promptly instead of waiting out the backoff.
+"${KUBECTL[@]}" -n argocd rollout restart deploy/argocd-applicationset-controller >/dev/null 2>&1 || true
+"${KUBECTL[@]}" -n argocd rollout status deploy/argocd-applicationset-controller --timeout=90s >/dev/null 2>&1 || true
+rec=0
+for app in demo-dev demo-repo-dev; do
+  if wait_synced "$app"; then
+    ok "'$app' is Synced + Healthy again"
+  else
+    warn "'$app' did not return to Synced/Healthy after recovery"; rec=1
+  fi
+done
+if [[ $rec -ne 0 ]]; then
+  "${KUBECTL[@]}" -n argocd get applications -o wide || true
+  "${KUBECTL[@]}" -n argocd logs deploy/oci-generator --tail=5 || true
   exit 1
 fi
+"${KUBECTL[@]}" -n argocd get applications
 
 # ---------------------------------------------------------------------------
 cat <<EOF
 
 ${c_green}==> Demo complete.${c_off}
 
-What you just saw:
-  • The plugin generator discovered the OCI Helm chart apps-oci/demo:1.0.0.
-  • The ApplicationSet created Application 'demo-dev' and Argo CD DEPLOYED it
-    (a real ConfigMap in namespace 'demo').
+What you just saw (success -> failure -> success):
+  • Tag match: the generator resolved apps-oci/demo:1.0.0 and Argo CD DEPLOYED
+    Application 'demo-dev' (a real ConfigMap in namespace 'demo').
+  • Repository match: 'demo-repo-dev' was created because the repository EXISTS,
+    with no specific tag named (match: repository), and deployed to 'demo-repo'.
+  • Missing tag: apps-oci/demo:9.9.9 was never published, so the generator
+    returned an empty result and NO Application was created (a successful empty
+    list is a prune instruction, not an error).
   • Taking the registry down makes the plugin fail closed (non-2xx), so Argo CD
-    PRESERVES the existing Application instead of deleting it.
-  • (Contrast: with the registry healthy and the tag removed, the generator
-    returns an empty set and the App would be pruned: a successful empty result,
-    not an error.)
+    PRESERVES the existing Applications instead of deleting them.
+  • Bringing the registry back (and re-pushing the chart) lets the generator
+    succeed again, and the Applications return to Synced/Healthy. The cluster is
+    left in a WORKING state.
 
 This demo uses its own kubeconfig, so your usual context is untouched. To talk
 to the throwaway cluster:
@@ -406,9 +548,6 @@ Open the Argo CD UI (HTTP, no certificate warning):
 If that password is rejected, the generated one is still in the cluster:
   kubectl -n argocd get secret argocd-initial-admin-secret \\
     -o jsonpath='{.data.password}' | base64 -d; echo
-
-Note: the demo registry uses ephemeral storage, so scaling it back up starts it
-empty; re-push with 'helm push ... --insecure-skip-tls-verify' to restore the chart.
 
 Tear everything down:
   hack/e2e.sh --clean          # or: make e2e-clean
