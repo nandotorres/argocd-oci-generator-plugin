@@ -77,3 +77,49 @@ func TestTagExists(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+// RepositoryExists answers "is the repository there?" without caring about tags,
+// and treats an absent repository as a definitive no rather than an error.
+func TestRepositoryExists(t *testing.T) {
+	host := startRegistry(t)
+	c := New(anonProvider{}, Options{PlainHTTP: true})
+	pushImage(t, host, "apps-oci/app/dev", "v1.0.0", nil)
+
+	t.Run("present", func(t *testing.T) {
+		ok, err := c.RepositoryExists(context.Background(), host, "apps-oci/app/dev")
+		require.NoError(t, err)
+		assert.True(t, ok)
+	})
+
+	t.Run("absent is false, not an error", func(t *testing.T) {
+		ok, err := c.RepositoryExists(context.Background(), host, "apps-oci/never/published")
+		require.NoError(t, err)
+		assert.False(t, ok)
+	})
+
+	t.Run("unreachable registry errors", func(t *testing.T) {
+		_, err := c.RepositoryExists(context.Background(), "127.0.0.1:1", "apps-oci/x")
+		require.Error(t, err)
+	})
+}
+
+// RepositoryHasTags needs a non-empty repository. The in-memory registry only
+// knows a repository once a tag is pushed, so "has tags" and "exists" coincide
+// here; the empty-repository path is covered by the generator fake.
+func TestRepositoryHasTags(t *testing.T) {
+	host := startRegistry(t)
+	c := New(anonProvider{}, Options{PlainHTTP: true})
+	pushImage(t, host, "apps-oci/app/dev", "v1.0.0", nil)
+
+	t.Run("has a tag", func(t *testing.T) {
+		ok, err := c.RepositoryHasTags(context.Background(), host, "apps-oci/app/dev")
+		require.NoError(t, err)
+		assert.True(t, ok)
+	})
+
+	t.Run("absent is false, not an error", func(t *testing.T) {
+		ok, err := c.RepositoryHasTags(context.Background(), host, "apps-oci/never/published")
+		require.NoError(t, err)
+		assert.False(t, ok)
+	})
+}

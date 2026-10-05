@@ -3,6 +3,23 @@ package generator
 
 import "fmt"
 
+// Match selects what existence question the generator asks. It is set
+// explicitly in the ApplicationSet so the prune semantics are never implicit:
+// repository and tagged modes make an absent repository an empty result (prune)
+// rather than an error, the reverse of tag mode (DESIGN.md §4.3).
+type Match string
+
+const (
+	// MatchTag resolves a single tag. An absent repository is an error. This is
+	// the default and the only mode that yields a digest-pinned reference.
+	MatchTag Match = "tag"
+	// MatchRepository checks only that the repository exists, regardless of
+	// whether it holds any tags. One status-only round trip.
+	MatchRepository Match = "repository"
+	// MatchTagged checks that the repository exists and holds at least one tag.
+	MatchTagged Match = "tagged"
+)
+
 // Input is the raw, JSON-decoded shape of the ApplicationSet
 // plugin.input.parameters for this generator.
 //
@@ -17,8 +34,11 @@ type Input struct {
 	// repositories needs the catalog endpoint, which is not part of the OCI
 	// distribution spec and is not served by every registry.
 	Repository string `json:"repository"`
-	// Tag is the tag to resolve. Required.
-	Tag string `json:"tag"`
+	// Tag is the tag to resolve. Required for match "tag" (the default), and
+	// must be empty otherwise.
+	Tag string `json:"tag,omitempty"`
+	// Match selects the existence question. Empty means "tag".
+	Match Match `json:"match,omitempty"`
 }
 
 // Query is a validated Input.
@@ -26,6 +46,7 @@ type Query struct {
 	Registry   string
 	Repository string
 	Tag        string
+	Match      Match
 
 	// AllowRepository, when non-nil, gates the repository against the
 	// registry's allowlist.
@@ -44,8 +65,23 @@ func (in Input) Compile(defaultRegistry string) (*Query, error) {
 	if in.Repository == "" {
 		return nil, fmt.Errorf("repository is required")
 	}
-	if in.Tag == "" {
-		return nil, fmt.Errorf("tag is required")
+
+	match := in.Match
+	if match == "" {
+		match = MatchTag
 	}
-	return &Query{Registry: registry, Repository: in.Repository, Tag: in.Tag}, nil
+	switch match {
+	case MatchTag:
+		if in.Tag == "" {
+			return nil, fmt.Errorf("tag is required for match %q", MatchTag)
+		}
+	case MatchRepository, MatchTagged:
+		if in.Tag != "" {
+			return nil, fmt.Errorf("tag must be empty for match %q", match)
+		}
+	default:
+		return nil, fmt.Errorf("invalid match %q (want %q, %q or %q)", match, MatchTag, MatchRepository, MatchTagged)
+	}
+
+	return &Query{Registry: registry, Repository: in.Repository, Tag: in.Tag, Match: match}, nil
 }

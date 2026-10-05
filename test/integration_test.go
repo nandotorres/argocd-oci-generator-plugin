@@ -132,6 +132,56 @@ func TestFullStackAbsentTagIsEmpty(t *testing.T) {
 	assert.Empty(t, out.Output.Parameters)
 }
 
+// match: repository creates one Application whenever the repository exists,
+// regardless of tags, and emits no digest.
+func TestFullStackRepositoryMatch(t *testing.T) {
+	reg := httptest.NewServer(ggcrregistry.New())
+	t.Cleanup(reg.Close)
+	host := mustHost(t, reg.URL)
+	push(t, host, "apps-oci/orders-api/orders-api/dev", "dev-current", nil)
+
+	cfg := &config.Config{
+		Token:                 "s3cret",
+		DefaultRegistry:       host,
+		RequestTimeoutSeconds: 10,
+		TLS:                   config.TLS{PlainHTTP: true},
+		Registries:            []config.Registry{{Host: host, Auth: config.Auth{Type: config.AuthAnonymous}}},
+	}
+	regClient := registry.New(auth.NewResolver(cfg), registry.Options{PlainHTTP: true})
+	srv := httptest.NewServer(server.New(cfg, generator.New(regClient, nil), nil).Handler())
+	t.Cleanup(srv.Close)
+
+	do := func(body string) ([]map[string]any, int) {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/getparams.execute", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer s3cret")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		var out struct {
+			Output struct {
+				Parameters []map[string]any `json:"parameters"`
+			} `json:"output"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+		return out.Output.Parameters, resp.StatusCode
+	}
+
+	t.Run("present", func(t *testing.T) {
+		params, code := do(`{"input":{"parameters":{"repository":"apps-oci/orders-api/orders-api/dev","match":"repository"}}}`)
+		require.Equal(t, http.StatusOK, code)
+		require.Len(t, params, 1)
+		o := params[0]["oci"].(map[string]any)
+		assert.Equal(t, "apps-oci/orders-api/orders-api/dev", o["repository"])
+		assert.NotContains(t, o, "digest")
+	})
+
+	t.Run("absent repository is empty, not an error", func(t *testing.T) {
+		params, code := do(`{"input":{"parameters":{"repository":"apps-oci/never/published","match":"repository"}}}`)
+		require.Equal(t, http.StatusOK, code)
+		assert.Empty(t, params)
+	})
+}
+
 func TestFullStackRegistryDownFailsClosed(t *testing.T) {
 	// Point at a registry that isn't listening -> generator error -> non-2xx.
 	host := "127.0.0.1:1" // unroutable port

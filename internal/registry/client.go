@@ -5,6 +5,7 @@ package registry
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,11 @@ import (
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/metrics"
 	"github.com/nandotorres/argocd-oci-generator-plugin/internal/oci"
 )
+
+// maxTagListBytes bounds the tag-list body we decode for RepositoryHasTags.
+// We only need the first page (n=1), so a few KiB is ample; the cap guards
+// against a registry streaming an unbounded body.
+const maxTagListBytes = 1 << 16 // 64 KiB
 
 // Client is a go-containerregistry-backed registry client.
 type Client struct {
@@ -104,7 +110,7 @@ func (c *Client) TagExists(ctx context.Context, host, repository, tag string) (b
 
 	// The tag is absent; the repository may be too.
 	start = time.Now()
-	exists, err := c.repositoryExists(ctx, host, repository)
+	exists, _, err := c.probeTags(ctx, host, repository, false)
 	c.observe("list_tags", start, err)
 	if err != nil {
 		return false, err
@@ -115,22 +121,48 @@ func (c *Client) TagExists(ctx context.Context, host, repository, tag string) (b
 	return false, fmt.Errorf("list tags %s/%s: repository does not exist", host, repository)
 }
 
-// repositoryExists probes the tag-list endpoint and reads only the status code.
-//
-// remote.List cannot be used here: it pages through every tag in the
-// repository, so asking it a yes/no question costs one request per page.
-func (c *Client) repositoryExists(ctx context.Context, host, repository string) (bool, error) {
-	repo, err := name.NewRepository(host+"/"+repository, c.nameOpts()...)
-	if err != nil {
-		return false, fmt.Errorf("invalid repository %q: %w", repository, err)
-	}
-	authr, err := c.auth.Authenticator(ctx, host)
+// RepositoryExists reports whether the repository exists, regardless of whether
+// it holds any tags. It is the status-only tag-list probe, so a repository with
+// ten thousand tags costs the same as an empty one.
+func (c *Client) RepositoryExists(ctx context.Context, host, repository string) (bool, error) {
+	start := time.Now()
+	exists, _, err := c.probeTags(ctx, host, repository, false)
+	c.observe("list_tags", start, err)
+	return exists, err
+}
+
+// RepositoryHasTags reports whether the repository exists and holds at least
+// one tag. An existing but empty repository is a definitive "no" (false, nil),
+// not an error. It reads only the first page (n=1), so it does not grow with
+// the number of tags.
+func (c *Client) RepositoryHasTags(ctx context.Context, host, repository string) (bool, error) {
+	start := time.Now()
+	exists, tagged, err := c.probeTags(ctx, host, repository, true)
+	c.observe("list_tags", start, err)
 	if err != nil {
 		return false, err
 	}
+	return exists && tagged, nil
+}
+
+// probeTags issues a single GET /v2/<repo>/tags/list?n=1. It always reports
+// whether the repository exists (from the status code); when readBody is set it
+// also decodes the first page to report whether any tag is present.
+//
+// remote.List cannot be used here: it pages through every tag in the
+// repository, so asking it a yes/no question costs one request per page.
+func (c *Client) probeTags(ctx context.Context, host, repository string, readBody bool) (exists, tagged bool, err error) {
+	repo, err := name.NewRepository(host+"/"+repository, c.nameOpts()...)
+	if err != nil {
+		return false, false, fmt.Errorf("invalid repository %q: %w", repository, err)
+	}
+	authr, err := c.auth.Authenticator(ctx, host)
+	if err != nil {
+		return false, false, err
+	}
 	rt, err := transport.NewWithContext(ctx, repo.Registry, authr, c.transport, []string{repo.Scope("pull")})
 	if err != nil {
-		return false, fmt.Errorf("authenticating to %s: %w", host, err)
+		return false, false, fmt.Errorf("authenticating to %s: %w", host, err)
 	}
 
 	u := url.URL{
@@ -141,22 +173,33 @@ func (c *Client) repositoryExists(ctx context.Context, host, repository string) 
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	resp, err := (&http.Client{Transport: rt}).Do(req)
 	if err != nil {
-		return false, fmt.Errorf("probing %s/%s: %w", host, repository, err)
+		return false, false, fmt.Errorf("probing %s/%s: %w", host, repository, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, resp.Body)
 
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		return false, nil
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return false, false, nil
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		return true, nil
+		if !readBody {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return true, false, nil
+		}
+		var list struct {
+			Tags []string `json:"tags"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxTagListBytes)).Decode(&list); err != nil {
+			return false, false, fmt.Errorf("decoding tags of %s/%s: %w", host, repository, err)
+		}
+		return true, len(list.Tags) > 0, nil
 	default:
-		return false, fmt.Errorf("probing %s/%s: unexpected status %s", host, repository, resp.Status)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return false, false, fmt.Errorf("probing %s/%s: unexpected status %s", host, repository, resp.Status)
 	}
 }
 

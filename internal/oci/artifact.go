@@ -43,3 +43,24 @@ func (a Artifact) Params() map[string]any {
 		},
 	}
 }
+
+// Repository is a registry/repository pair, used by the existence-only match
+// modes where no tag is resolved.
+type Repository struct {
+	Registry   string
+	Repository string
+}
+
+// Params renders the repository into a nested parameter map. It deliberately
+// omits tag, digest, pinnedRef and mediaType: no manifest was resolved, so
+// there is nothing to pin to. Templates that need immutability should use tag
+// mode instead.
+func (r Repository) Params() map[string]any {
+	return map[string]any{
+		"oci": map[string]any{
+			"registry":   r.Registry,
+			"repository": r.Repository,
+			"ref":        r.Registry + "/" + r.Repository,
+		},
+	}
+}
