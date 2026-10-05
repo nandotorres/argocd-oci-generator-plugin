@@ -179,15 +179,20 @@ func (c *Client) probeTags(ctx context.Context, host, repository string, readBod
 	if err != nil {
 		return false, false, fmt.Errorf("probing %s/%s: %w", host, repository, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	// Drain whatever is left before closing: an unread body keeps the TCP
+	// connection from being reused, so under frequent polling it would churn
+	// connections. This matters for the readBody path below, where both the
+	// LimitReader cap and the decoder's trailing bytes can leave data unread.
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		_, _ = io.Copy(io.Discard, resp.Body)
 		return false, false, nil
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		if !readBody {
-			_, _ = io.Copy(io.Discard, resp.Body)
 			return true, false, nil
 		}
 		var list struct {
@@ -198,7 +203,6 @@ func (c *Client) probeTags(ctx context.Context, host, repository string, readBod
 		}
 		return true, len(list.Tags) > 0, nil
 	default:
-		_, _ = io.Copy(io.Discard, resp.Body)
 		return false, false, fmt.Errorf("probing %s/%s: unexpected status %s", host, repository, resp.Status)
 	}
 }
