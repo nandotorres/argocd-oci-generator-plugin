@@ -5,8 +5,9 @@ and the HTTP contract.
 
 ## 1. Problem
 
-Argo CD 3.6 added a built-in OCI generator
-([argoproj/argo-cd#26121](https://github.com/argoproj/argo-cd/pull/26121)). It
+Argo CD added a built-in OCI generator
+([argoproj/argo-cd#26121](https://github.com/argoproj/argo-cd/pull/26121)),
+slated for the 3.6 release. It
 mirrors the Git generator: it reads the directories and files inside an OCI
 artifact and emits one parameter set per match. Use it when you want to fan out
 over the *contents* of an artifact.

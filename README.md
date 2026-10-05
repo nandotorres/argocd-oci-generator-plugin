@@ -20,8 +20,9 @@ Internals: [DESIGN.md](DESIGN.md).
 
 ## When to use this (and when not to)
 
-Since **Argo CD 3.6** there is a built-in
-[OCI generator](https://github.com/argoproj/argo-cd/pull/26121). It works like
+Argo CD has a built-in OCI generator
+([argoproj/argo-cd#26121](https://github.com/argoproj/argo-cd/pull/26121)),
+slated for the 3.6 release. It works like
 the Git generator: it reads the directories and files inside an OCI artifact and
 creates one Application per match. If you want to pull content out of an artifact
 and fan out over it, use that. It is native, maintained by Argo CD, and needs no
@@ -55,7 +56,7 @@ So, picking a tool:
 - **Deploying a known OCI artifact?** Use Argo CD's OCI source directly. No
   generator needed.
 - **Fanning out over the files inside an artifact?** Use the built-in OCI
-  generator (Argo CD 3.6+).
+  generator ([argoproj/argo-cd#26121](https://github.com/argoproj/argo-cd/pull/26121), Argo CD 3.6).
 - **Creating an Application only when an artifact or repository exists —
   fail-closed, digest-pinned, with server-side credentials?** That is what this
   plugin is for, and the built-in generator does not do it.
