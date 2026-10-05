@@ -213,7 +213,8 @@ Input (`plugin.input.parameters`):
 | key | type | |
 |---|---|---|
 | `repository` | string | required. Literal repository path. |
-| `tag` | string | required. The tag to resolve. |
+| `tag` | string | required for `match: tag` (the default); must be empty otherwise. |
+| `match` | string | `tag` (default), `repository`, or `tagged`. See [Match modes](#match-modes). |
 | `registry` | string | host. Defaults to the server's `defaultRegistry`. |
 
 The ApplicationSet controller interpolates the surrounding generator's
@@ -241,6 +242,43 @@ oci:
 With `goTemplate: false`, Argo CD flattens these (`oci.tag`, `oci.digest`).
 `digest` is worth recording on the Application: it captures what a mutable tag
 actually pointed at.
+
+### Match modes
+
+By default the plugin asks *"does this `tag` exist?"*. `match` lets it instead
+ask *"does this repository exist?"* — useful when an Application should appear as
+soon as a team publishes anything, or when the tag is decided downstream (a
+mutable channel, a bot-maintained pointer) and you don't want the generator to
+pin it.
+
+| `match` | question | `tag` | present → | absent → |
+|---|---|---|---|---|
+| `tag` (default) | does `repository:tag` resolve? | required | one param set (with `digest`/`pinnedRef`) | empty, prune |
+| `repository` | does `repository` exist at all? | must be empty | one param set (no digest) | empty, prune |
+| `tagged` | does `repository` exist **and** hold ≥1 tag? | must be empty | one param set (no digest) | empty, prune |
+
+You must set `match` explicitly — it is never inferred from an empty `tag` —
+because the repository modes **reverse the prune rule**: a missing repository
+becomes an empty result (prune), whereas in `tag` mode it is an error (change
+nothing). Opting in is the point.
+
+When to reach for each:
+
+- **`match: tag`** — the normal case. Per-environment deploys where the tag
+  varies per cluster, and you want a digest-pinned, immutable reference.
+- **`match: repository`** — onboarding / fan-out: create the Application the
+  moment the repository appears, and let `targetRevision` follow a channel you
+  control. Fewest round trips (status-only), so cheapest at scale.
+- **`match: tagged`** — same, but don't onboard an empty placeholder repository;
+  wait until something is actually published. Same cost and output shape as
+  `repository`.
+
+Both repository modes are a single tag-list probe (`?n=1`), so cost does not
+grow with the number of tags, and the output carries **no** `tag`, `digest`,
+`pinnedRef` or `mediaType`: no manifest is resolved, so there is nothing to pin
+to. Templates needing immutability should use `match: tag`.
+
+Example: [`deploy/examples/applicationset-repository-existence.yaml`](deploy/examples/applicationset-repository-existence.yaml).
 
 ## Repository allowlist
 
@@ -270,6 +308,10 @@ so it fails closed and nothing is deleted. The practical consequence is to keep
 the repository constant and put the per-environment dimension in the tag
 (`web-app:production-current`), not in the repository path
 (`web-app/production:current`).
+
+The exception is `match: repository` / `match: tagged`, where a missing
+repository *is* the answer (empty, prune). That reversal is why those modes are
+opt-in; see [Match modes](#match-modes).
 
 Auth failures, 5xx and network errors always fail closed.
 

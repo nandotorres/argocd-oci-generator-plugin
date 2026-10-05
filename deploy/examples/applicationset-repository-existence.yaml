@@ -1,0 +1,57 @@
+# Create an Application when the OCI *repository* exists, regardless of tags.
+#
+# Set `match: repository` to switch from "does this tag exist?" to "does this
+# repository exist?". This is opt-in precisely because it flips the prune
+# semantics:
+#
+#   repository present      -> one Application is created/kept.
+#   repository absent        -> no Application (any previous one is pruned).
+#   registry/auth error      -> the generator errors and NOTHING is deleted.
+#
+# `tag` MUST be omitted in this mode. The output has no digest/tag/pinnedRef,
+# because no manifest is resolved: it is a single status-only round trip, so a
+# repository with ten thousand tags costs the same as an empty one.
+#
+# Prefer this over `match: tag` when onboarding should happen as soon as a team
+# publishes anything, or when the tag name is decided downstream (a mutable
+# channel, a bot-maintained pointer) and you do not want the generator to pin it.
+#
+# To require that the repository is not just present but has at least one tag,
+# use `match: tagged` instead (same cost, same shape).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: orders-api-onboarding
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - plugin:
+        configMapRef:
+          name: oci-generator
+        requeueAfterSeconds: 300
+        input:
+          parameters:
+            registry: registry.example.com
+            repository: apps-oci/orders-api/orders-api/dev
+            match: repository # existence of the repo; omit `tag`
+            # match: tagged   # ...or require at least one tag published
+  template:
+    metadata:
+      name: orders-api-dev
+    spec:
+      project: default
+      source:
+        # No pinned tag is available in this mode. Point targetRevision at a
+        # mutable channel you control, not at .oci.tag (which is unset here).
+        repoURL: "oci://{{ .oci.registry }}/{{ .oci.repository }}"
+        targetRevision: "dev-current"
+        path: generated
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: orders-api
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true

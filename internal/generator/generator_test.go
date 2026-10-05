@@ -58,6 +58,28 @@ func (f *fakeClient) Head(_ context.Context, registry, repo, tag string) (*oci.A
 	return &a, nil
 }
 
+// RepositoryExists mirrors the real client: an absent repository is a
+// definitive (false, nil), never an error.
+func (f *fakeClient) RepositoryExists(_ context.Context, registry, repo string) (bool, error) {
+	f.calls["RepositoryExists"]++
+	if err := f.err["RepositoryExists"]; err != nil {
+		return false, err
+	}
+	_, ok := f.tags[registry+"/"+repo]
+	return ok, nil
+}
+
+// RepositoryHasTags reports true only when the repository exists and is not
+// empty.
+func (f *fakeClient) RepositoryHasTags(_ context.Context, registry, repo string) (bool, error) {
+	f.calls["RepositoryHasTags"]++
+	if err := f.err["RepositoryHasTags"]; err != nil {
+		return false, err
+	}
+	tags, ok := f.tags[registry+"/"+repo]
+	return ok && len(tags) > 0, nil
+}
+
 func (f *fakeClient) addArtifact(a oci.Artifact) {
 	f.tags[a.Registry+"/"+a.Repository] = append(f.tags[a.Registry+"/"+a.Repository], a.Tag)
 	f.arts[a.Registry+"/"+a.Repository+":"+a.Tag] = a
@@ -137,9 +159,12 @@ func TestCompileValidation(t *testing.T) {
 		in   Input
 		want string
 	}{
-		"no registry":   {Input{Repository: "a/b", Tag: "x"}, "registry is required"},
-		"no repository": {Input{Registry: "r", Tag: "x"}, "repository is required"},
-		"no tag":        {Input{Registry: "r", Repository: "a/b"}, "tag is required"},
+		"no registry":         {Input{Repository: "a/b", Tag: "x"}, "registry is required"},
+		"no repository":       {Input{Registry: "r", Tag: "x"}, "repository is required"},
+		"no tag":              {Input{Registry: "r", Repository: "a/b"}, `tag is required for match "tag"`},
+		"tag with repo match": {Input{Registry: "r", Repository: "a/b", Tag: "x", Match: MatchRepository}, `tag must be empty for match "repository"`},
+		"tag with tagged":     {Input{Registry: "r", Repository: "a/b", Tag: "x", Match: MatchTagged}, `tag must be empty for match "tagged"`},
+		"unknown match":       {Input{Registry: "r", Repository: "a/b", Match: "semver"}, `invalid match "semver"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := tc.in.Compile("")
@@ -147,6 +172,66 @@ func TestCompileValidation(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
+}
+
+// match: repository creates an Application whenever the repository is present,
+// even with no tags. The output carries no digest, because nothing was resolved.
+func TestRepositoryMatch(t *testing.T) {
+	t.Run("present, no tags", func(t *testing.T) {
+		f := newFakeClient()
+		f.tags["r/apps/app"] = nil // repository exists, empty
+
+		got, err := New(f, nil).Generate(context.Background(),
+			mustCompile(t, Input{Registry: "r", Repository: "apps/app", Match: MatchRepository}))
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+
+		o := got[0]["oci"].(map[string]any)
+		assert.Equal(t, "apps/app", o["repository"])
+		assert.Equal(t, "r/apps/app", o["ref"])
+		assert.NotContains(t, o, "digest", "repository mode resolves no manifest")
+		assert.NotContains(t, o, "tag")
+		assert.Equal(t, 0, f.calls["TagExists"])
+	})
+
+	// An absent repository is the answer here (prune), not an error.
+	t.Run("absent is empty, not an error", func(t *testing.T) {
+		f := newFakeClient()
+		got, err := New(f, nil).Generate(context.Background(),
+			mustCompile(t, Input{Registry: "r", Repository: "apps/never", Match: MatchRepository}))
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("registry failure propagates", func(t *testing.T) {
+		f := newFakeClient()
+		f.err["RepositoryExists"] = errors.New("registry unreachable")
+		_, err := New(f, nil).Generate(context.Background(),
+			mustCompile(t, Input{Registry: "r", Repository: "apps/app", Match: MatchRepository}))
+		require.Error(t, err)
+	})
+}
+
+// match: tagged additionally requires at least one tag, so an empty repository
+// is an empty result.
+func TestTaggedMatch(t *testing.T) {
+	t.Run("present with a tag", func(t *testing.T) {
+		f := newFakeClient()
+		f.tags["r/apps/app"] = []string{"v1"}
+		got, err := New(f, nil).Generate(context.Background(),
+			mustCompile(t, Input{Registry: "r", Repository: "apps/app", Match: MatchTagged}))
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+	})
+
+	t.Run("present but empty is no Application", func(t *testing.T) {
+		f := newFakeClient()
+		f.tags["r/apps/app"] = nil
+		got, err := New(f, nil).Generate(context.Background(),
+			mustCompile(t, Input{Registry: "r", Repository: "apps/app", Match: MatchTagged}))
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
 }
 
 func TestRegistryDefaultApplies(t *testing.T) {

@@ -46,6 +46,10 @@ In scope:
 
 - Resolve one `registry/repository:tag` and report whether it exists, emitting
   one parameter set when it does.
+- Existence-only variants (`match: repository`, `match: tagged`) that report
+  whether a repository exists, or exists with at least one tag, without
+  resolving a manifest. Opt-in, because they reverse the prune semantics of a
+  missing repository (§4.3).
 - Centralized credentials: basic auth (any registry-v2 with user/password) and
   ECR (IRSA / Pod Identity, optionally assuming a role).
 - Fail closed (§2.1). Structured logging, health endpoints, Prometheus metrics.
@@ -74,8 +78,16 @@ generators:
         parameters:
           registry: registry.example.com   # optional; else the server default
           repository: apps-oci/my-app      # required, literal
-          tag: production-current          # required
+          tag: production-current          # required for match: tag (default)
+          match: tag                       # tag (default) | repository | tagged
 ```
+
+`match` selects the question. `tag` (the default) resolves a single tag;
+`repository` checks only that the repository exists; `tagged` checks that it
+exists and holds at least one tag. For the repository modes `tag` must be empty,
+and the output omits the manifest-derived fields (§4.2). `match` is required
+explicitly rather than inferred from an empty `tag`, because the repository
+modes reverse what a missing repository means (§4.3).
 
 The ApplicationSet controller interpolates the surrounding generator's
 parameters into these fields before the plugin is called, so a matrix varies
@@ -102,7 +114,22 @@ oci:
 Everything here comes from a manifest `HEAD`, so the cost is one round trip and
 does not grow with the number of tags in the repository.
 
+For `match: repository` and `match: tagged` no manifest is resolved, so the map
+is reduced to what is known — there is no tag or digest to report:
+
+```yaml
+oci:
+  registry:   registry.example.com
+  repository: apps-oci/my-app
+  ref:        registry.example.com/apps-oci/my-app
+```
+
+Consumers that need an immutable, digest-pinned reference must therefore use
+`match: tag`.
+
 ### 4.3 Existence, and what counts as an answer
+
+For the default `match: tag`:
 
 | Registry says | Meaning | Result |
 |---|---|---|
@@ -119,6 +146,22 @@ This mirrors Git: a missing *file* in a repository that exists is an empty
 result, while a missing *repository* is an error. Keeping the repository
 constant and varying the tag per environment therefore gives decommissioning
 the same semantics as deleting a file.
+
+The repository modes ask a different question, so a missing repository is an
+*answer*, not an anomaly:
+
+| `match: repository` / `tagged` says | Result |
+|---|---|
+| repository present (and, for `tagged`, has ≥1 tag) | one parameter set |
+| repository present but empty (`tagged` only) | empty, no Application |
+| repository absent | empty, no Application (prune) |
+| 401/403/5xx/network | error, nothing deleted |
+
+This reversal — repository-absent moving from *error* to *empty* — is exactly why
+`match` is required explicitly and never inferred. Both modes are a single
+tag-list probe (`?n=1`); `repository` reads only the status code, `tagged`
+also decodes the first page to see whether any tag is present. Neither grows
+with the number of tags.
 
 ## 5. Security model
 
@@ -168,8 +211,8 @@ cmd/plugin          load config, wire dependencies, run the server
 internal/config     config load/validate + ${VAR} expansion
 internal/server     HTTP server: bearer auth, /api/v1/getparams.execute, health
 internal/auth       Authenticator interface + basic/ecr/anonymous providers
-internal/registry   go-containerregistry wrapper: tag existence, manifest HEAD
-internal/generator  validate input → resolve the tag → parameters
+internal/registry   go-containerregistry wrapper: tag/repository existence, manifest HEAD
+internal/generator  validate input → resolve tag or probe repository → parameters
 internal/oci        artifact value object + parameter mapping
 internal/metrics    Prometheus collectors
 internal/pattern    glob matcher for the allowedRepositories policy
