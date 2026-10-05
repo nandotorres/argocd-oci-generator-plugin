@@ -3,4 +3,4 @@
 coverage.out
 *.out
 .env
-/.e2e/
+.e2e/
