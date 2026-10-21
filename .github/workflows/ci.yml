@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.25"
+  GO_VERSION: "1.27.3"
   # Fail the build if go.sum would be mutated; never auto-resolve modules.
   GOFLAGS: "-mod=readonly"
 
