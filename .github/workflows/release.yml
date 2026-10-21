@@ -38,7 +38,7 @@ jobs:
       - name: Verify module checksums
         run: go mod verify
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - name: govulncheck
         run: govulncheck ./...
       - name: Install Trivy
@@ -51,7 +51,9 @@ jobs:
           sudo install -m 0755 trivy /usr/local/bin/trivy
       - name: Trivy filesystem scan (fail on fixable CRITICAL/HIGH)
         env:
-          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+          # Comma-separated mirrors: Trivy falls through to the next on rate limits
+          # (public.ecr.aws returns TOOMANYREQUESTS under load).
+          TRIVY_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-db:2,public.ecr.aws/aquasecurity/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
         run: |
           trivy fs --scanners vuln,secret,misconfig \
             --ignorefile .trivyignore.yaml \
@@ -134,7 +136,9 @@ jobs:
           sudo install -m 0755 trivy /usr/local/bin/trivy
       - name: Trivy image scan (SARIF)
         env:
-          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+          # Comma-separated mirrors: Trivy falls through to the next on rate limits
+          # (public.ecr.aws returns TOOMANYREQUESTS under load).
+          TRIVY_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-db:2,public.ecr.aws/aquasecurity/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
         run: |
           trivy image --format sarif --output trivy-image.sarif \
             --ignore-unfixed --severity CRITICAL,HIGH \
