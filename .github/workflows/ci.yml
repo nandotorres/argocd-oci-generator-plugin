@@ -82,7 +82,7 @@ jobs:
       # Installed directly (not via govulncheck-action) so every executed action
       # stays SHA-pinned, satisfying the repository's action-pinning policy.
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - name: Run govulncheck
         run: govulncheck ./...
 
